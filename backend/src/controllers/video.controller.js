@@ -164,6 +164,11 @@ export async function queueVideoProcessing(req, res) {
     });
   }
 
+  video.overlayImageUrl = normalizedAssignments[0]?.overlayImageUrl;
+  video.filterAssignments = normalizedAssignments;
+  video.error = undefined;
+  await video.save();
+
   const job = await videoQueue.add(
     "process-video",
     {
@@ -180,11 +185,8 @@ export async function queueVideoProcessing(req, res) {
     }
   );
 
-  video.overlayImageUrl = normalizedAssignments[0]?.overlayImageUrl;
-  video.filterAssignments = normalizedAssignments;
   video.status = "queued";
   video.jobId = String(job.id);
-  video.error = undefined;
   await video.save();
 
   return res.json({

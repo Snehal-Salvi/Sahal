@@ -15,7 +15,6 @@ import requests
 
 mp_face_mesh = mp.solutions.face_mesh
 
-CANONICAL_CANVAS_SIZE = 512
 EPSILON = 1e-6
 ANALYSIS_SAMPLE_FRAMES = 8
 MAX_ANALYSIS_FRAME_WIDTH = 960
@@ -39,71 +38,6 @@ MOUTH_INNER = [
 ]
 DESCRIPTOR_KEYPOINTS = [10, 152, 234, 454, 33, 133, 159, 145, 263, 362, 386, 374, 4, 61, 291, 13, 14]
 
-CANONICAL_CONTROL_POINTS: Dict[int, Tuple[float, float]] = {
-    10: (0.50, 0.10),
-    338: (0.63, 0.13),
-    297: (0.72, 0.18),
-    332: (0.79, 0.25),
-    284: (0.85, 0.33),
-    251: (0.89, 0.43),
-    389: (0.90, 0.52),
-    356: (0.89, 0.60),
-    454: (0.87, 0.68),
-    323: (0.83, 0.75),
-    361: (0.77, 0.83),
-    288: (0.69, 0.89),
-    397: (0.60, 0.95),
-    152: (0.50, 0.98),
-    172: (0.40, 0.95),
-    58: (0.31, 0.89),
-    132: (0.23, 0.82),
-    93: (0.17, 0.74),
-    234: (0.13, 0.67),
-    127: (0.11, 0.58),
-    162: (0.10, 0.47),
-    54: (0.15, 0.33),
-    67: (0.24, 0.18),
-    109: (0.37, 0.13),
-    33: (0.31, 0.43),
-    160: (0.35, 0.39),
-    158: (0.39, 0.39),
-    133: (0.43, 0.43),
-    153: (0.39, 0.47),
-    144: (0.35, 0.47),
-    263: (0.69, 0.43),
-    387: (0.65, 0.39),
-    385: (0.61, 0.39),
-    362: (0.57, 0.43),
-    380: (0.65, 0.47),
-    373: (0.61, 0.47),
-    70: (0.28, 0.33),
-    63: (0.34, 0.30),
-    105: (0.40, 0.29),
-    66: (0.45, 0.31),
-    107: (0.24, 0.35),
-    336: (0.72, 0.33),
-    296: (0.66, 0.30),
-    334: (0.60, 0.29),
-    293: (0.55, 0.31),
-    300: (0.76, 0.35),
-    168: (0.50, 0.34),
-    6: (0.50, 0.46),
-    4: (0.50, 0.57),
-    195: (0.50, 0.64),
-    61: (0.34, 0.71),
-    0: (0.50, 0.66),
-    291: (0.66, 0.71),
-    17: (0.50, 0.80),
-    78: (0.36, 0.71),
-    13: (0.50, 0.70),
-    308: (0.64, 0.71),
-    14: (0.50, 0.76),
-}
-CONTROL_POINT_IDS = list(CANONICAL_CONTROL_POINTS.keys())
-CANONICAL_POINTS = np.array(
-    [[x_value * CANONICAL_CANVAS_SIZE, y_value * CANONICAL_CANVAS_SIZE] for x_value, y_value in CANONICAL_CONTROL_POINTS.values()],
-    dtype=np.float32,
-)
 
 
 @dataclass(frozen=True)
@@ -124,16 +58,9 @@ class ExpressionTuning:
 
 @dataclass
 class CartoonStyle:
-    base_color: Tuple[int, int, int]
-    outline_color: Tuple[int, int, int]
-    shadow_color: Tuple[int, int, int]
-    blush_color: Tuple[int, int, int]
-    lip_color: Tuple[int, int, int]
-    mouth_inner_color: Tuple[int, int, int]
-    brow_color: Tuple[int, int, int]
-    eye_white_color: Tuple[int, int, int]
-    pupil_color: Tuple[int, int, int]
     texture: np.ndarray
+    filter_landmarks: Optional[np.ndarray] = None   # (468, 2) face pts in filter PNG
+    filter_triangles: Optional[List[Tuple[int, int, int]]] = None  # Delaunay on above
 
 
 @dataclass
@@ -150,6 +77,22 @@ class ExpressionState:
             self.values[key] = previous + alpha * (value - previous)
 
         return self.values.copy()
+
+
+@dataclass
+class LandmarkSmoother:
+    """Per-face EMA smoother for the raw 468×2 landmark coordinate array."""
+    smoothed: Optional[np.ndarray] = None
+
+    def update(self, points: np.ndarray, alpha: float) -> np.ndarray:
+        if self.smoothed is None:
+            self.smoothed = points.copy()
+        else:
+            self.smoothed = self.smoothed + alpha * (points - self.smoothed)
+        return self.smoothed.copy()
+
+    def reset(self) -> None:
+        self.smoothed = None
 
 
 @dataclass
@@ -203,20 +146,6 @@ def env_int(name: str, default: int) -> int:
 
 def remap(value: float, source_min: float, source_max: float) -> float:
     return clamp((value - source_min) / max(source_max - source_min, EPSILON), 0.0, 1.0)
-
-
-def to_int_tuple(color: Sequence[float]) -> Tuple[int, int, int]:
-    return tuple(int(clamp(float(channel), 0.0, 255.0)) for channel in color)
-
-
-def adjust_color(color: Sequence[float], factor: float) -> Tuple[int, int, int]:
-    return to_int_tuple([channel * factor for channel in color])
-
-
-def blend_colors(color_a: Sequence[float], color_b: Sequence[float], alpha: float) -> Tuple[int, int, int]:
-    return to_int_tuple(
-        [(1.0 - alpha) * float(channel_a) + alpha * float(channel_b) for channel_a, channel_b in zip(color_a, color_b)]
-    )
 
 
 def load_expression_tuning() -> ExpressionTuning:
@@ -454,243 +383,94 @@ def update_profile(profile: FaceProfile, detection: FaceDetection, frame_index: 
         profile.representative_box = detection.normalized_box.copy()
 
 
-def prepare_overlay_texture(overlay_rgba: np.ndarray, canvas_size: int = CANONICAL_CANVAS_SIZE) -> np.ndarray:
-    canvas = np.zeros((canvas_size, canvas_size, 4), dtype=np.uint8)
-    overlay_height, overlay_width = overlay_rgba.shape[:2]
-    scale = min((canvas_size * 0.84) / max(overlay_width, 1), (canvas_size * 0.88) / max(overlay_height, 1))
-    resized = cv2.resize(
-        overlay_rgba,
-        (
-            max(1, int(round(overlay_width * scale))),
-            max(1, int(round(overlay_height * scale))),
-        ),
-        interpolation=cv2.INTER_LINEAR,
+def remove_white_background(rgba: np.ndarray, lo_diff: int = 18) -> np.ndarray:
+    """Flood-fill from every edge pixel that is near-white.
+    Only the edge-connected background becomes transparent; internal white areas
+    (like eye whites or clothing) are preserved."""
+    out = rgba.copy()
+    h, w = out.shape[:2]
+    bgr = out[:, :, :3].copy()
+    mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+
+    seeds = (
+        [(x, 0) for x in range(0, w, 4)] +
+        [(x, h - 1) for x in range(0, w, 4)] +
+        [(0, y) for y in range(0, h, 4)] +
+        [(w - 1, y) for y in range(0, h, 4)]
     )
+    for sx, sy in seeds:
+        b, g, r = int(bgr[sy, sx, 0]), int(bgr[sy, sx, 1]), int(bgr[sy, sx, 2])
+        if b > 200 and g > 200 and r > 200:
+            cv2.floodFill(bgr, mask, (sx, sy), (255, 255, 255),
+                          loDiff=(lo_diff, lo_diff, lo_diff),
+                          upDiff=(lo_diff, lo_diff, lo_diff),
+                          flags=cv2.FLOODFILL_MASK_ONLY | (255 << 8))
 
-    x_offset = (canvas_size - resized.shape[1]) // 2
-    y_offset = int(canvas_size * 0.06) + (canvas_size - int(canvas_size * 0.12) - resized.shape[0]) // 2
-    y_offset = int(clamp(y_offset, 0, canvas_size - resized.shape[0]))
-    canvas[y_offset:y_offset + resized.shape[0], x_offset:x_offset + resized.shape[1]] = resized
-    return canvas
-
-
-def build_style_from_overlay(overlay_rgba: np.ndarray) -> CartoonStyle:
-    visible_pixels = overlay_rgba[overlay_rgba[:, :, 3] > 0]
-    if visible_pixels.size == 0:
-        base_color = np.array([176, 208, 255], dtype=np.float32)
-    else:
-        base_color = visible_pixels[:, :3].astype(np.float32).mean(axis=0)
-
-    texture = prepare_overlay_texture(overlay_rgba)
-    light_tint = np.array([255.0, 255.0, 255.0], dtype=np.float32)
-    warm_tint = np.array([214.0, 142.0, 255.0], dtype=np.float32)
-    deep_tint = np.array([32.0, 38.0, 48.0], dtype=np.float32)
-
-    return CartoonStyle(
-        base_color=blend_colors(base_color, light_tint, 0.18),
-        outline_color=blend_colors(base_color, deep_tint, 0.68),
-        shadow_color=adjust_color(base_color, 0.75),
-        blush_color=blend_colors(base_color, warm_tint, 0.45),
-        lip_color=blend_colors(base_color, np.array([88.0, 72.0, 240.0], dtype=np.float32), 0.55),
-        mouth_inner_color=to_int_tuple((42.0, 28.0, 86.0)),
-        brow_color=blend_colors(base_color, deep_tint, 0.78),
-        eye_white_color=to_int_tuple((255, 255, 255)),
-        pupil_color=to_int_tuple((24, 24, 24)),
-        texture=texture,
-    )
+    out[mask[1:-1, 1:-1].astype(bool), 3] = 0
+    return out
 
 
-def compute_triangle_indices(points: np.ndarray, size: int) -> List[Tuple[int, int, int]]:
-    subdiv = cv2.Subdiv2D((0, 0, size, size))
-    for point in points:
-        subdiv.insert((float(clamp(point[0], 0, size - 1)), float(clamp(point[1], 0, size - 1))))
+def detect_face_in_filter(bgra: np.ndarray) -> Optional[np.ndarray]:
+    """Run MediaPipe Face Mesh on the filter PNG and return (468, 2) pixel coords if a
+    face is detected, else None."""
+    h, w = bgra.shape[:2]
+    rgb = cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2RGB)
+    with mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.3,
+    ) as face_mesh:
+        results = face_mesh.process(rgb)
+    if not results.multi_face_landmarks:
+        return None
+    lm = results.multi_face_landmarks[0]
+    return np.array([[l.x * w, l.y * h] for l in lm.landmark], dtype=np.float32)
+
+
+def compute_delaunay_triangles(
+    points: np.ndarray,
+    img_shape: Tuple[int, int],
+) -> List[Tuple[int, int, int]]:
+    """Delaunay triangulation of (N, 2) face landmark array within image bounds."""
+    h, w = img_shape[:2]
+    subdiv = cv2.Subdiv2D((0, 0, w, h))
+    for pt in points:
+        subdiv.insert((float(clamp(pt[0], 0, w - 1)), float(clamp(pt[1], 0, h - 1))))
 
     triangles: List[Tuple[int, int, int]] = []
-    for triangle in subdiv.getTriangleList():
-        vertices = triangle.reshape(3, 2)
-        indices: List[int] = []
-        for vertex in vertices:
-            distances = [float(np.linalg.norm(point - vertex)) for point in points]
-            nearest_index = int(np.argmin(distances))
-            if distances[nearest_index] > 2.0:
+    seen: set = set()
+    for tri in subdiv.getTriangleList():
+        verts = tri.reshape(3, 2)
+        indices = []
+        for v in verts:
+            dists = np.linalg.norm(points - v, axis=1)
+            idx = int(np.argmin(dists))
+            if dists[idx] > 2.0:
                 indices = []
                 break
-            indices.append(nearest_index)
-        if len(set(indices)) == 3:
-            normalized = tuple(sorted(indices))
-            if normalized not in triangles:
-                triangles.append(normalized)
+            indices.append(idx)
+        if len(indices) == 3 and len(set(indices)) == 3:
+            key = tuple(sorted(indices))
+            if key not in seen:
+                seen.add(key)
+                triangles.append(key)
     return triangles
 
 
-CANONICAL_TRIANGLES = compute_triangle_indices(CANONICAL_POINTS, CANONICAL_CANVAS_SIZE)
+def build_style_from_overlay(overlay_rgba: np.ndarray) -> CartoonStyle:
+    texture = overlay_rgba.copy()
+    # If every pixel is fully opaque the PNG has no real transparency → strip background
+    if int(texture[:, :, 3].min()) == 255:
+        texture = remove_white_background(texture)
 
+    # Try to detect a face in the filter PNG for expression-synced mesh warp
+    filter_lm = detect_face_in_filter(texture)
+    filter_tri = None
+    if filter_lm is not None:
+        filter_tri = compute_delaunay_triangles(filter_lm, texture.shape)
 
-def composite_rgba(destination: np.ndarray, source: np.ndarray) -> np.ndarray:
-    src_alpha = source[:, :, 3:4].astype(np.float32) / 255.0
-    dst_alpha = destination[:, :, 3:4].astype(np.float32) / 255.0
-    src_rgb = source[:, :, :3].astype(np.float32)
-    dst_rgb = destination[:, :, :3].astype(np.float32)
-
-    out_alpha = src_alpha + dst_alpha * (1.0 - src_alpha)
-    out_rgb = np.where(
-        out_alpha > EPSILON,
-        (src_rgb * src_alpha + dst_rgb * dst_alpha * (1.0 - src_alpha)) / np.maximum(out_alpha, EPSILON),
-        0.0,
-    )
-
-    combined = np.zeros_like(destination)
-    combined[:, :, :3] = np.clip(out_rgb, 0, 255).astype(np.uint8)
-    combined[:, :, 3] = np.clip(out_alpha * 255.0, 0, 255).astype(np.uint8).reshape(destination.shape[:2])
-    return combined
-
-
-def alpha_blend(frame: np.ndarray, overlay_rgba: np.ndarray) -> np.ndarray:
-    alpha = overlay_rgba[:, :, 3:4].astype(np.float32) / 255.0
-    overlay_rgb = overlay_rgba[:, :, :3].astype(np.float32)
-    frame_float = frame.astype(np.float32)
-    blended = alpha * overlay_rgb + (1.0 - alpha) * frame_float
-    return blended.astype(np.uint8)
-
-
-def warp_overlay_mesh(texture: np.ndarray, target_points: np.ndarray, frame_shape: Tuple[int, int, int]) -> np.ndarray:
-    frame_height, frame_width = frame_shape[:2]
-    warped = np.zeros((frame_height, frame_width, 4), dtype=np.uint8)
-
-    for first_index, second_index, third_index in CANONICAL_TRIANGLES:
-        src_triangle = np.float32([CANONICAL_POINTS[first_index], CANONICAL_POINTS[second_index], CANONICAL_POINTS[third_index]])
-        dst_triangle = np.float32([target_points[first_index], target_points[second_index], target_points[third_index]])
-
-        src_rect = cv2.boundingRect(src_triangle)
-        dst_rect = cv2.boundingRect(dst_triangle)
-        if src_rect[2] <= 0 or src_rect[3] <= 0 or dst_rect[2] <= 0 or dst_rect[3] <= 0:
-            continue
-
-        x_value, y_value, width, height = dst_rect
-        if x_value >= frame_width or y_value >= frame_height or x_value + width <= 0 or y_value + height <= 0:
-            continue
-
-        src_x, src_y, src_width, src_height = src_rect
-        src_crop = texture[src_y:src_y + src_height, src_x:src_x + src_width]
-        if src_crop.size == 0:
-            continue
-
-        src_offset_triangle = src_triangle - np.array([src_x, src_y], dtype=np.float32)
-        dst_offset_triangle = dst_triangle - np.array([x_value, y_value], dtype=np.float32)
-        affine_matrix = cv2.getAffineTransform(src_offset_triangle, dst_offset_triangle)
-        warped_patch = cv2.warpAffine(
-            src_crop,
-            affine_matrix,
-            (width, height),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0, 0),
-        )
-
-        triangle_mask = np.zeros((height, width), dtype=np.uint8)
-        cv2.fillConvexPoly(triangle_mask, np.int32(np.round(dst_offset_triangle)), 255, lineType=cv2.LINE_AA)
-        warped_patch[:, :, 3] = cv2.bitwise_and(warped_patch[:, :, 3], triangle_mask)
-
-        clipped_x1 = max(0, x_value)
-        clipped_y1 = max(0, y_value)
-        clipped_x2 = min(frame_width, x_value + width)
-        clipped_y2 = min(frame_height, y_value + height)
-        if clipped_x1 >= clipped_x2 or clipped_y1 >= clipped_y2:
-            continue
-
-        patch_x1 = clipped_x1 - x_value
-        patch_y1 = clipped_y1 - y_value
-        patch_x2 = patch_x1 + (clipped_x2 - clipped_x1)
-        patch_y2 = patch_y1 + (clipped_y2 - clipped_y1)
-        destination = warped[clipped_y1:clipped_y2, clipped_x1:clipped_x2]
-        source = warped_patch[patch_y1:patch_y2, patch_x1:patch_x2]
-        warped[clipped_y1:clipped_y2, clipped_x1:clipped_x2] = composite_rgba(destination, source)
-
-    return warped
-
-
-def draw_translucent_polygon(layer: np.ndarray, points: np.ndarray, color: Tuple[int, int, int], alpha: int) -> None:
-    polygon = np.int32(np.round(points))
-    if polygon.shape[0] >= 3:
-        cv2.fillPoly(layer, [polygon], (color[0], color[1], color[2], alpha), lineType=cv2.LINE_AA)
-
-
-def draw_face_base(layer: np.ndarray, points: np.ndarray, style: CartoonStyle) -> None:
-    face_oval = points[FACE_OVAL]
-    draw_translucent_polygon(layer, face_oval, style.base_color, 72)
-    cv2.polylines(layer, [np.int32(np.round(face_oval))], True, (style.outline_color[0], style.outline_color[1], style.outline_color[2], 120), 3, lineType=cv2.LINE_AA)
-
-    blush_radius = max(8, int(np.linalg.norm(points[234] - points[454]) * 0.05))
-    for cheek in (points[123], points[352]):
-        cv2.circle(layer, tuple(np.int32(np.round(cheek))), blush_radius, (style.blush_color[0], style.blush_color[1], style.blush_color[2], 78), -1, lineType=cv2.LINE_AA)
-
-    highlight_center = tuple(np.int32(np.round((points[10] + points[4]) * 0.5)))
-    highlight_radius = max(10, int(np.linalg.norm(points[10] - points[4]) * 0.18))
-    cv2.circle(layer, highlight_center, highlight_radius, (255, 255, 255, 28), -1, lineType=cv2.LINE_AA)
-
-
-def draw_brow(layer: np.ndarray, brow_points: np.ndarray, eye_center: np.ndarray, brow_raise: float, style: CartoonStyle) -> None:
-    brow_center = brow_points.mean(axis=0)
-    lift = brow_points + (brow_center - eye_center) * brow_raise * 0.30
-    thickness = max(3, int(np.linalg.norm(lift[0] - lift[-1]) * 0.10))
-    cv2.polylines(layer, [np.int32(np.round(lift))], False, (style.brow_color[0], style.brow_color[1], style.brow_color[2], 235), thickness, lineType=cv2.LINE_AA)
-
-
-def draw_eye(layer: np.ndarray, eye_points: np.ndarray, blink: float, style: CartoonStyle) -> None:
-    outer_corner = eye_points[0]
-    upper_points = eye_points[1:3]
-    inner_corner = eye_points[3]
-    lower_points = eye_points[4:6]
-    eye_center = eye_points.mean(axis=0)
-    eye_width = max(float(np.linalg.norm(inner_corner - outer_corner)), 1.0)
-    eye_height = max(float(np.linalg.norm(upper_points.mean(axis=0) - lower_points.mean(axis=0))), 1.0)
-    angle = math.degrees(math.atan2(inner_corner[1] - outer_corner[1], inner_corner[0] - outer_corner[0]))
-    openness = clamp(1.0 - blink, 0.0, 1.0)
-
-    if openness < 0.18:
-        direction = inner_corner - outer_corner
-        direction /= max(float(np.linalg.norm(direction)), EPSILON)
-        offset = direction * max(6, int(eye_width * 0.42))
-        start = tuple(np.int32(np.round(eye_center - offset)))
-        end = tuple(np.int32(np.round(eye_center + offset)))
-        cv2.line(layer, start, end, (style.brow_color[0], style.brow_color[1], style.brow_color[2], 245), max(2, int(eye_width * 0.08)), lineType=cv2.LINE_AA)
-        return
-
-    axes = (max(4, int(eye_width * 0.32)), max(2, int(eye_height * (0.35 + openness * 1.8))))
-    center = tuple(np.int32(np.round(eye_center)))
-    cv2.ellipse(layer, center, axes, angle, 0, 360, (style.eye_white_color[0], style.eye_white_color[1], style.eye_white_color[2], 242), -1, lineType=cv2.LINE_AA)
-    cv2.ellipse(layer, center, axes, angle, 0, 360, (style.outline_color[0], style.outline_color[1], style.outline_color[2], 235), max(2, int(eye_width * 0.06)), lineType=cv2.LINE_AA)
-
-    pupil_radius = max(3, int(eye_width * 0.13))
-    pupil_center = eye_center + np.array([0.0, eye_height * 0.10], dtype=np.float32)
-    cv2.circle(layer, tuple(np.int32(np.round(pupil_center))), pupil_radius, (style.pupil_color[0], style.pupil_color[1], style.pupil_color[2], 255), -1, lineType=cv2.LINE_AA)
-    cv2.circle(layer, tuple(np.int32(np.round(pupil_center + np.array([-pupil_radius * 0.35, -pupil_radius * 0.35], dtype=np.float32)))), max(1, pupil_radius // 3), (255, 255, 255, 255), -1, lineType=cv2.LINE_AA)
-
-
-def scale_points(points: np.ndarray, center: np.ndarray, scale_x: float, scale_y: float) -> np.ndarray:
-    shifted = points - center
-    shifted[:, 0] *= scale_x
-    shifted[:, 1] *= scale_y
-    return shifted + center
-
-
-def draw_mouth(layer: np.ndarray, points: np.ndarray, coefficients: Dict[str, float], style: CartoonStyle) -> None:
-    outer = points[MOUTH_OUTER].copy()
-    inner = points[MOUTH_INNER].copy()
-    mouth_center = (points[13] + points[14] + points[61] + points[291]) * 0.25
-
-    outer = scale_points(outer, mouth_center, 1.0 + coefficients["smile"] * 0.26, 0.82 + coefficients["mouth_open"] * 0.95)
-    cv2.fillPoly(layer, [np.int32(np.round(outer))], (style.lip_color[0], style.lip_color[1], style.lip_color[2], 220), lineType=cv2.LINE_AA)
-    cv2.polylines(layer, [np.int32(np.round(outer))], True, (style.outline_color[0], style.outline_color[1], style.outline_color[2], 245), 2, lineType=cv2.LINE_AA)
-
-    if coefficients["mouth_open"] > 0.08:
-        inner = scale_points(inner, mouth_center, 0.95 + coefficients["smile"] * 0.14, 0.80 + coefficients["mouth_open"] * 1.30)
-        cv2.fillPoly(layer, [np.int32(np.round(inner))], (style.mouth_inner_color[0], style.mouth_inner_color[1], style.mouth_inner_color[2], 240), lineType=cv2.LINE_AA)
-
-
-def draw_nose(layer: np.ndarray, points: np.ndarray, style: CartoonStyle) -> None:
-    radius = max(3, int(np.linalg.norm(points[4] - points[6]) * 0.28))
-    cv2.circle(layer, tuple(np.int32(np.round(points[4]))), radius, (style.shadow_color[0], style.shadow_color[1], style.shadow_color[2], 165), -1, lineType=cv2.LINE_AA)
+    return CartoonStyle(texture=texture, filter_landmarks=filter_lm, filter_triangles=filter_tri)
 
 
 def extract_expression_coefficients(points: np.ndarray, tuning: ExpressionTuning) -> Dict[str, float]:
@@ -731,18 +511,194 @@ def extract_expression_coefficients(points: np.ndarray, tuning: ExpressionTuning
     }
 
 
-def render_cartoon_face(frame: np.ndarray, points: np.ndarray, style: CartoonStyle, coefficients: Dict[str, float]) -> np.ndarray:
-    target_points = np.array([points[index] for index in CONTROL_POINT_IDS], dtype=np.float32)
-    textured_mesh = warp_overlay_mesh(style.texture, target_points, frame.shape)
-    feature_layer = np.zeros((frame.shape[0], frame.shape[1], 4), dtype=np.uint8)
-    draw_face_base(feature_layer, points, style)
-    draw_brow(feature_layer, points[LEFT_BROW], points[LEFT_EYE_RING].mean(axis=0), coefficients["brow_raise_left"], style)
-    draw_brow(feature_layer, points[RIGHT_BROW], points[RIGHT_EYE_RING].mean(axis=0), coefficients["brow_raise_right"], style)
-    draw_eye(feature_layer, points[LEFT_EYE_RING], coefficients["blink_left"], style)
-    draw_eye(feature_layer, points[RIGHT_EYE_RING], coefficients["blink_right"], style)
-    draw_nose(feature_layer, points, style)
-    draw_mouth(feature_layer, points, coefficients, style)
-    return alpha_blend(frame, composite_rgba(textured_mesh, feature_layer))
+def _composite_over(canvas: np.ndarray, patch: np.ndarray,
+                    cy1: int, cy2: int, cx1: int, cx2: int,
+                    py1: int, py2: int, px1: int, px2: int) -> None:
+    """Alpha-composite patch region over canvas region in place."""
+    dst = canvas[cy1:cy2, cx1:cx2].astype(np.float32)
+    src = patch[py1:py2, px1:px2].astype(np.float32)
+    sa = src[:, :, 3:4] / 255.0
+    da = dst[:, :, 3:4] / 255.0
+    oa = sa + da * (1.0 - sa)
+    safe = np.maximum(oa, 1e-6)
+    out_rgb = (src[:, :, :3] * sa + dst[:, :, :3] * da * (1.0 - sa)) / safe
+    canvas[cy1:cy2, cx1:cx2, :3] = out_rgb.clip(0, 255).astype(np.uint8)
+    canvas[cy1:cy2, cx1:cx2, 3] = (oa * 255).clip(0, 255).astype(np.uint8).reshape(cy2 - cy1, cx2 - cx1)
+
+
+def _composite_filter(
+    frame: np.ndarray,
+    warped_canvas: np.ndarray,
+    face_points: np.ndarray,
+) -> np.ndarray:
+    """Composite warped filter onto frame with a soft feathered boundary and
+    luminance matching so the filter looks lit by the same light as the face.
+
+    Inside the face oval the blend fades softly to zero at the skin boundary
+    (no hard sticker edge). Outside the oval the filter's own alpha is used
+    as-is so cartoon hair / ears / accessories stay crisp.
+    """
+    h, w = frame.shape[:2]
+
+    oval_pts = np.int32(face_points[FACE_OVAL])
+    hard_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillConvexPoly(hard_mask, cv2.convexHull(oval_pts), 255)
+
+    # Feather radius: 7 % of face width, minimum 10 px
+    face_w = float(np.linalg.norm(face_points[454] - face_points[234]))
+    feather_px = max(10, int(face_w * 0.07))
+
+    # Soft oval: erode inward then Gaussian-blur so the blend tapers to zero
+    # at (and just inside) the face boundary — no hard cut.
+    erode_k = max(1, feather_px // 3)
+    inner = cv2.erode(hard_mask, np.ones((erode_k * 2 + 1, erode_k * 2 + 1), np.uint8))
+    soft = cv2.GaussianBlur(inner.astype(np.float32), (0, 0), sigmaX=float(feather_px))
+    if soft.max() > 0:
+        soft /= soft.max()
+    soft = np.clip(soft, 0.0, 1.0)
+
+    filter_alpha = warped_canvas[:, :, 3].astype(np.float32) / 255.0
+    src_bgr = warped_canvas[:, :, :3].astype(np.float32)
+    dst = frame.astype(np.float32)
+
+    # Luminance matching: scale filter brightness to the face's ambient light.
+    # This makes a cartoon filter look like it belongs in the same scene.
+    face_px = hard_mask > 127
+    w_sum = float(filter_alpha[face_px].sum())
+    if face_px.any() and w_sum > 200:
+        dst_l = cv2.cvtColor(frame, cv2.COLOR_BGR2Lab)[:, :, 0].astype(np.float32)
+        src_l = cv2.cvtColor(warped_canvas[:, :, :3], cv2.COLOR_BGR2Lab)[:, :, 0].astype(np.float32)
+        ref_lum = float(dst_l[face_px].mean())
+        src_lum = float((src_l[face_px] * filter_alpha[face_px]).sum() / w_sum)
+        if src_lum > 5.0:
+            lum_scale = float(np.clip(ref_lum / src_lum, 0.5, 1.8))
+            src_bgr = np.clip(src_bgr * lum_scale, 0.0, 255.0)
+
+    # Build final per-pixel blend alpha:
+    #   inside oval  → filter alpha × soft feather (fades at skin boundary)
+    #   outside oval → filter alpha unchanged (accessories stay sharp)
+    inside = (hard_mask[:, :, np.newaxis] > 0).astype(np.float32)
+    f3 = filter_alpha[:, :, np.newaxis]
+    s3 = soft[:, :, np.newaxis]
+    blend_alpha = f3 * (s3 * inside + (1.0 - inside))
+
+    return ((1.0 - blend_alpha) * dst + blend_alpha * src_bgr).clip(0, 255).astype(np.uint8)
+
+
+def _warp_mesh(frame: np.ndarray,
+               texture: np.ndarray,
+               src_lm: np.ndarray,
+               dst_lm: np.ndarray,
+               triangles: List[Tuple[int, int, int]]) -> np.ndarray:
+    """
+    Warp the filter face (src_lm) onto the live face (dst_lm) triangle-by-triangle.
+    Because dst_lm changes with every expression, the filter's eye and mouth
+    triangles compress/expand with the real face — giving automatic blink/talk sync.
+    """
+    h, w = frame.shape[:2]
+    canvas = np.zeros((h, w, 4), dtype=np.uint8)
+
+    for i, j, k in triangles:
+        src_tri = np.float32([src_lm[i], src_lm[j], src_lm[k]])
+        dst_tri = np.float32([dst_lm[i], dst_lm[j], dst_lm[k]])
+
+        sr = cv2.boundingRect(src_tri)
+        dr = cv2.boundingRect(dst_tri)
+        if sr[2] <= 0 or sr[3] <= 0 or dr[2] <= 0 or dr[3] <= 0:
+            continue
+
+        sx, sy, sw, sh = sr
+        dx, dy, dw, dh = dr
+        if dx + dw <= 0 or dy + dh <= 0 or dx >= w or dy >= h:
+            continue
+
+        crop = texture[sy:sy + sh, sx:sx + sw]
+        if crop.size == 0:
+            continue
+
+        M = cv2.getAffineTransform(
+            src_tri - np.float32([sx, sy]),
+            dst_tri - np.float32([dx, dy]),
+        )
+        warped_patch = cv2.warpAffine(crop, M, (dw, dh),
+                                      flags=cv2.INTER_LINEAR,
+                                      borderMode=cv2.BORDER_CONSTANT,
+                                      borderValue=(0, 0, 0, 0))
+
+        tri_mask = np.zeros((dh, dw), dtype=np.uint8)
+        cv2.fillConvexPoly(tri_mask,
+                           np.int32(np.round(dst_tri - np.float32([dx, dy]))),
+                           255, lineType=cv2.LINE_AA)
+        warped_patch[:, :, 3] = cv2.bitwise_and(warped_patch[:, :, 3], tri_mask)
+
+        cx1, cy1 = max(0, dx), max(0, dy)
+        cx2, cy2 = min(w, dx + dw), min(h, dy + dh)
+        px1, py1 = cx1 - dx, cy1 - dy
+        px2, py2 = px1 + (cx2 - cx1), py1 + (cy2 - cy1)
+        if cx2 <= cx1 or cy2 <= cy1:
+            continue
+
+        _composite_over(canvas, warped_patch, cy1, cy2, cx1, cx2, py1, py2, px1, px2)
+
+    return canvas  # RGBA — caller composites with frame after applying expression holes
+
+
+def _warp_perspective_filter(frame: np.ndarray,
+                              texture: np.ndarray,
+                              points: np.ndarray) -> np.ndarray:
+    """
+    For filters where no face was detected (cups, hats, accessories).
+    Places the filter via a 4-point perspective transform so it covers the full face
+    area including elements outside the face oval (rim, handle, hair, etc.).
+    The filter's own artwork covers the face entirely — no real face shows through.
+    """
+    h, w = frame.shape[:2]
+    th, tw = texture.shape[:2]
+
+    face_w = float(np.linalg.norm(points[454] - points[234]))
+    face_h = float(np.linalg.norm(points[152] - points[10]))
+    if face_w < 4 or face_h < 4:
+        return frame
+
+    right = (points[454] - points[234]) / face_w
+    down  = (points[152] - points[10])  / face_h
+
+    top_mid    = points[10]  - down  * face_h * 0.18
+    bottom_mid = points[152] + down  * face_h * 0.10
+
+    tl = top_mid    - right * face_w * 0.62
+    tr = top_mid    + right * face_w * 0.62
+    br = bottom_mid + right * face_w * 0.55
+    bl = bottom_mid - right * face_w * 0.55
+
+    M = cv2.getPerspectiveTransform(
+        np.float32([[0, 0], [tw - 1, 0], [tw - 1, th - 1], [0, th - 1]]),
+        np.float32([tl, tr, br, bl]),
+    )
+    warped = cv2.warpPerspective(texture, M, (w, h),
+                                  flags=cv2.INTER_LINEAR,
+                                  borderMode=cv2.BORDER_CONSTANT,
+                                  borderValue=(0, 0, 0, 0))
+
+    alpha = warped[:, :, 3].astype(np.float32) / 255.0
+    a3 = alpha[:, :, np.newaxis]
+    result = (1.0 - a3) * frame.astype(np.float32) + a3 * warped[:, :, :3].astype(np.float32)
+    return result.clip(0, 255).astype(np.uint8)
+
+
+def render_cartoon_face(
+    frame: np.ndarray,
+    points: np.ndarray,
+    style: CartoonStyle,
+    _coefficients: Dict[str, float],
+) -> np.ndarray:
+    if style.filter_landmarks is not None and style.filter_triangles:
+        canvas = _warp_mesh(frame, style.texture,
+                            style.filter_landmarks, points,
+                            style.filter_triangles)
+        return _composite_filter(frame, canvas, points)
+
+    return _warp_perspective_filter(frame, style.texture, points)
 
 
 def analyze_video(video_url: str) -> Dict[str, object]:
@@ -838,22 +794,15 @@ def mux_original_audio(input_video_path: str, processed_video_path: str, output_
     command = [
         "ffmpeg",
         "-y",
-        "-i",
-        processed_video_path,
-        "-i",
-        input_video_path,
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "18",
-        "-c:a",
-        "copy",
+        "-i", processed_video_path,
+        "-i", input_video_path,
+        "-map", "0:v:0",
+        "-map", "1:a:0?",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "17",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
         output_video_path,
     ]
     subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -921,6 +870,8 @@ def process_video(video_url: str, detected_faces: List[Dict[str, object]], filte
         writer = cv2.VideoWriter(silent_output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
 
         expression_states: Dict[str, ExpressionState] = {face_id: ExpressionState() for face_id in styles_by_face}
+        landmark_smoothers: Dict[str, LandmarkSmoother] = {}
+        fallback_smoothers: List[LandmarkSmoother] = []
         fallback_style = styles_by_face[filter_assignments[0]["faceId"]] if len(filter_assignments) == 1 else None
         frame_counter = 0
 
@@ -947,17 +898,26 @@ def process_video(video_url: str, detected_faces: List[Dict[str, object]], filte
                         if not style:
                             continue
 
+                        smoother = landmark_smoothers.setdefault(profile.face_id, LandmarkSmoother())
+                        # Reset if face was absent long enough that old position is stale
+                        if profile.last_seen_frame >= 0 and frame_counter - profile.last_seen_frame > 10:
+                            smoother.reset()
                         update_profile(profile, detection, frame_counter)
-                        coefficients = extract_expression_coefficients(detection.points, tuning)
+                        smoothed_points = smoother.update(detection.points, tuning.smoothing_alpha)
+
+                        coefficients = extract_expression_coefficients(smoothed_points, tuning)
                         coefficients = expression_states.setdefault(profile.face_id, ExpressionState()).smooth(
                             coefficients,
                             tuning.smoothing_alpha,
                         )
-                        frame = render_cartoon_face(frame, detection.points, style, coefficients)
+                        frame = render_cartoon_face(frame, smoothed_points, style, coefficients)
                 elif fallback_style:
-                    for detection in detections:
-                        coefficients = extract_expression_coefficients(detection.points, tuning)
-                        frame = render_cartoon_face(frame, detection.points, fallback_style, coefficients)
+                    for idx, detection in enumerate(detections):
+                        while len(fallback_smoothers) <= idx:
+                            fallback_smoothers.append(LandmarkSmoother())
+                        smoothed_points = fallback_smoothers[idx].update(detection.points, tuning.smoothing_alpha)
+                        coefficients = extract_expression_coefficients(smoothed_points, tuning)
+                        frame = render_cartoon_face(frame, smoothed_points, fallback_style, coefficients)
 
                 writer.write(frame)
                 frame_counter += 1
