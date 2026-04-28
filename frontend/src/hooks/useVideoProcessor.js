@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeVideoFaces,
+  getBuiltInFilters,
   getVideoStatus,
   queueVideoProcessing,
   uploadOverlay,
@@ -36,6 +37,8 @@ export function useVideoProcessor() {
   const filterLibraryRef = useRef([]);
   const fileInputRef = useRef(null);
   const filterInputRef = useRef(null);
+  // Tracks the file we already auto-triggered analysis for, to avoid re-firing
+  const autoAnalyzedKeyRef = useRef("");
 
   useEffect(() => {
     videoPreviewRef.current = videoPreviewUrl;
@@ -45,9 +48,42 @@ export function useVideoProcessor() {
   useEffect(() => {
     return () => {
       if (videoPreviewRef.current) URL.revokeObjectURL(videoPreviewRef.current);
-      for (const f of filterLibraryRef.current) URL.revokeObjectURL(f.previewUrl);
+      // Only revoke object URLs for custom uploads, not built-in filters
+      for (const f of filterLibraryRef.current) {
+        if (!f.isBuiltIn) URL.revokeObjectURL(f.previewUrl);
+      }
       if (pollingRef.current) window.clearInterval(pollingRef.current);
     };
+  }, []);
+
+  // Auto-trigger analysis the moment the user arrives at step 2 with a fresh video
+  useEffect(() => {
+    if (step !== 2 || !videoFile || analysis) return;
+    const key = `${videoFile.name}-${videoFile.size}-${videoFile.lastModified}`;
+    if (autoAnalyzedKeyRef.current === key) return;
+    autoAnalyzedKeyRef.current = key;
+    handleAnalyzeFaces();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, videoFile, analysis]);
+
+  // Load built-in filters from the backend on mount
+  useEffect(() => {
+    getBuiltInFilters()
+      .then((filters) => {
+        const builtins = filters.map((f) => ({
+          id: f.id,
+          name: f.name,
+          previewUrl: f.url,
+          url: f.url,
+          isBuiltIn: true,
+        }));
+        setFilterLibrary((cur) => {
+          // Prepend built-ins; don't duplicate if already present
+          const existingIds = new Set(cur.map((f) => f.id));
+          return [...builtins.filter((b) => !existingIds.has(b.id)), ...cur];
+        });
+      })
+      .catch(() => {}); // Silently ignore if backend isn't up yet
   }, []);
 
   const assignedFilters = useMemo(
@@ -108,18 +144,25 @@ export function useVideoProcessor() {
     return res.video;
   }
 
-  function handleVideoFileChange(event) {
-    const nextFile = event.target.files?.[0];
-    if (!nextFile) return;
-    setVideoFile(nextFile);
+  function applyVideoFile(file) {
+    if (!file) return;
+    setVideoFile(file);
     setVideoRecord(null);
     setAnalysis(null);
     resetSelections();
     setStatus("idle");
     setError("");
     if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
-    setVideoPreviewUrl(URL.createObjectURL(nextFile));
+    setVideoPreviewUrl(URL.createObjectURL(file));
     goTo(2);
+  }
+
+  function handleVideoFileChange(event) {
+    applyVideoFile(event.target.files?.[0]);
+  }
+
+  function handleVideoFileDrop(file) {
+    applyVideoFile(file);
   }
 
   async function handleAnalyzeFaces() {
@@ -189,8 +232,13 @@ export function useVideoProcessor() {
       const uploadCache = new Map();
       for (const filter of filterLibrary) {
         if (Object.values(assignedFilters).includes(filter.id)) {
-          const res = await uploadOverlay(filter.file);
-          uploadCache.set(filter.id, res.overlayUrl);
+          if (filter.isBuiltIn) {
+            // Built-in filters are already hosted on the backend — use their URL directly
+            uploadCache.set(filter.id, filter.url);
+          } else {
+            const res = await uploadOverlay(filter.file);
+            uploadCache.set(filter.id, res.overlayUrl);
+          }
         }
       }
       const filterAssignments = analysis.faces.map((face) => ({
@@ -210,12 +258,15 @@ export function useVideoProcessor() {
   }
 
   function handleReset() {
-    for (const f of filterLibraryRef.current) URL.revokeObjectURL(f.previewUrl);
+    for (const f of filterLibraryRef.current) {
+      if (!f.isBuiltIn) URL.revokeObjectURL(f.previewUrl);
+    }
     if (videoPreviewRef.current) URL.revokeObjectURL(videoPreviewRef.current);
     setVideoFile(null);
     setVideoRecord(null);
     setAnalysis(null);
-    setFilterLibrary([]);
+    // Keep built-in filters; clear only custom uploads
+    setFilterLibrary((cur) => cur.filter((f) => f.isBuiltIn));
     resetSelections();
     setStatus("idle");
     setError("");
@@ -243,6 +294,7 @@ export function useVideoProcessor() {
     filterInputRef,
     goTo,
     handleVideoFileChange,
+    handleVideoFileDrop,
     handleAnalyzeFaces,
     handleFilterLibraryChange,
     removeFilter,

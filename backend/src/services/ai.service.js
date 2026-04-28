@@ -7,19 +7,21 @@ function unwrapAIServiceError(error) {
     throw error;
   }
 
-  try {
-    const decodedBody = Buffer.from(responseBody).toString("utf8");
-    const parsedBody = JSON.parse(decodedBody);
-    const detail = parsedBody?.detail || parsedBody?.message;
+  // Axios may have already parsed the JSON body into a plain object
+  if (typeof responseBody === "object" && !Buffer.isBuffer(responseBody)) {
+    const detail = responseBody?.detail || responseBody?.message;
+    throw new Error(detail || JSON.stringify(responseBody));
+  }
 
-    if (detail) {
-      throw new Error(detail);
-    }
+  try {
+    const text = Buffer.from(responseBody).toString("utf8");
+    const parsed = JSON.parse(text);
+    const detail = parsed?.detail || parsed?.message;
+    throw new Error(detail || text);
   } catch (parseError) {
     if (parseError instanceof SyntaxError) {
       throw new Error(Buffer.from(responseBody).toString("utf8"));
     }
-
     throw parseError;
   }
 }

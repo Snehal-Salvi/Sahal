@@ -31,7 +31,10 @@ export default function VideoUploader() {
       />
 
       {p.step === 1 && (
-        <Step1Upload onChooseFile={() => p.fileInputRef.current?.click()} />
+        <Step1Upload
+          onChooseFile={() => p.fileInputRef.current?.click()}
+          onDropFile={p.handleVideoFileDrop}
+        />
       )}
 
       {p.step === 2 && (

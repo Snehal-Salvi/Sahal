@@ -16,8 +16,9 @@ import requests
 mp_face_mesh = mp.solutions.face_mesh
 
 EPSILON = 1e-6
-ANALYSIS_SAMPLE_FRAMES = 8
-MAX_ANALYSIS_FRAME_WIDTH = 960
+ANALYSIS_SAMPLE_FRAMES = 2      # 2 frames is enough for stable face ID
+MAX_ANALYSIS_FRAME_WIDTH = 960  # preview resize
+MAX_ANALYSIS_DETECT_WIDTH = 480 # MediaPipe input resize (smaller = much faster)
 
 FACE_OVAL = [
     10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379,
@@ -35,6 +36,18 @@ MOUTH_OUTER = [
 MOUTH_INNER = [
     78, 95, 88, 178, 87, 14, 317, 402, 318, 324,
     308, 415, 310, 311, 312, 13, 82, 81, 80, 191
+]
+
+# Full eye contour regions (used for always-on mask transparency)
+LEFT_EYE_FULL = [
+    33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246,
+    # eyebrow
+    70, 63, 105, 66, 107, 55, 65, 52, 53, 46,
+]
+RIGHT_EYE_FULL = [
+    263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466,
+    # eyebrow
+    336, 296, 334, 293, 300, 285, 295, 282, 283, 276,
 ]
 DESCRIPTOR_KEYPOINTS = [10, 152, 234, 454, 33, 133, 159, 145, 263, 362, 386, 374, 4, 61, 291, 13, 14]
 
@@ -412,20 +425,30 @@ def remove_white_background(rgba: np.ndarray, lo_diff: int = 18) -> np.ndarray:
 
 def detect_face_in_filter(bgra: np.ndarray) -> Optional[np.ndarray]:
     """Run MediaPipe Face Mesh on the filter PNG and return (468, 2) pixel coords if a
-    face is detected, else None."""
+    face is detected, else None. Tries multiple preprocessing variants to handle
+    stylized/cartoon artwork."""
     h, w = bgra.shape[:2]
     rgb = cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2RGB)
-    with mp_face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.3,
-    ) as face_mesh:
-        results = face_mesh.process(rgb)
-    if not results.multi_face_landmarks:
-        return None
-    lm = results.multi_face_landmarks[0]
-    return np.array([[l.x * w, l.y * h] for l in lm.landmark], dtype=np.float32)
+
+    candidates = [
+        rgb,
+        cv2.convertScaleAbs(rgb, alpha=1.4, beta=15),   # boost contrast
+        cv2.cvtColor(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY),  # greyscale → RGB
+                     cv2.COLOR_GRAY2RGB),
+    ]
+
+    for img in candidates:
+        with mp_face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.15,
+        ) as face_mesh:
+            results = face_mesh.process(img)
+        if results.multi_face_landmarks:
+            lm = results.multi_face_landmarks[0]
+            return np.array([[l.x * w, l.y * h] for l in lm.landmark], dtype=np.float32)
+    return None
 
 
 def compute_delaunay_triangles(
@@ -544,13 +567,13 @@ def _composite_filter(
     hard_mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillConvexPoly(hard_mask, cv2.convexHull(oval_pts), 255)
 
-    # Feather radius: 7 % of face width, minimum 10 px
+    # Feather radius: 3 % of face width (tight edge — wide fade caused chin bleed-through)
     face_w = float(np.linalg.norm(face_points[454] - face_points[234]))
-    feather_px = max(10, int(face_w * 0.07))
+    feather_px = max(4, int(face_w * 0.03))
 
-    # Soft oval: erode inward then Gaussian-blur so the blend tapers to zero
-    # at (and just inside) the face boundary — no hard cut.
-    erode_k = max(1, feather_px // 3)
+    # Soft edge: small erosion + narrow Gaussian so the filter is opaque across
+    # most of the face and only fades in the last few pixels at the boundary.
+    erode_k = max(1, feather_px // 2)
     inner = cv2.erode(hard_mask, np.ones((erode_k * 2 + 1, erode_k * 2 + 1), np.uint8))
     soft = cv2.GaussianBlur(inner.astype(np.float32), (0, 0), sigmaX=float(feather_px))
     if soft.max() > 0:
@@ -643,62 +666,102 @@ def _warp_mesh(frame: np.ndarray,
     return canvas  # RGBA — caller composites with frame after applying expression holes
 
 
-def _warp_perspective_filter(frame: np.ndarray,
-                              texture: np.ndarray,
-                              points: np.ndarray) -> np.ndarray:
+def _warp_perspective_to_canvas(
+    frame_shape: Tuple[int, int, int],
+    texture: np.ndarray,
+    points: np.ndarray,
+) -> np.ndarray:
+    """Perspective-warp the filter texture to align with the live face.
+
+    Returns an RGBA canvas the same size as the frame.  The caller decides how
+    to composite it (allowing expression-transparency holes to be punched first).
+
+    Padding ratios are tuned so cartoon heads with large hair (Nobita, Shizuka)
+    fit without being clipped at the top or sides.
     """
-    For filters where no face was detected (cups, hats, accessories).
-    Places the filter via a 4-point perspective transform so it covers the full face
-    area including elements outside the face oval (rim, handle, hair, etc.).
-    The filter's own artwork covers the face entirely — no real face shows through.
-    """
-    h, w = frame.shape[:2]
+    h, w = frame_shape[:2]
     th, tw = texture.shape[:2]
 
     face_w = float(np.linalg.norm(points[454] - points[234]))
     face_h = float(np.linalg.norm(points[152] - points[10]))
     if face_w < 4 or face_h < 4:
-        return frame
+        return np.zeros((h, w, 4), dtype=np.uint8)
 
     right = (points[454] - points[234]) / face_w
     down  = (points[152] - points[10])  / face_h
 
-    top_mid    = points[10]  - down  * face_h * 0.18
-    bottom_mid = points[152] + down  * face_h * 0.10
+    # 42 % above forehead (room for hair/hat), 12 % below chin, 72 % each side
+    top_mid    = points[10]  - down  * face_h * 0.42
+    bottom_mid = points[152] + down  * face_h * 0.12
 
-    tl = top_mid    - right * face_w * 0.62
-    tr = top_mid    + right * face_w * 0.62
-    br = bottom_mid + right * face_w * 0.55
-    bl = bottom_mid - right * face_w * 0.55
+    tl = top_mid    - right * face_w * 0.72
+    tr = top_mid    + right * face_w * 0.72
+    br = bottom_mid + right * face_w * 0.65
+    bl = bottom_mid - right * face_w * 0.65
 
     M = cv2.getPerspectiveTransform(
         np.float32([[0, 0], [tw - 1, 0], [tw - 1, th - 1], [0, th - 1]]),
         np.float32([tl, tr, br, bl]),
     )
-    warped = cv2.warpPerspective(texture, M, (w, h),
-                                  flags=cv2.INTER_LINEAR,
-                                  borderMode=cv2.BORDER_CONSTANT,
-                                  borderValue=(0, 0, 0, 0))
+    return cv2.warpPerspective(
+        texture, M, (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0),
+    )
 
-    alpha = warped[:, :, 3].astype(np.float32) / 255.0
-    a3 = alpha[:, :, np.newaxis]
-    result = (1.0 - a3) * frame.astype(np.float32) + a3 * warped[:, :, :3].astype(np.float32)
-    return result.clip(0, 255).astype(np.uint8)
+
+def _apply_expression_transparency(
+    canvas: np.ndarray,
+    dst: np.ndarray,
+    coefficients: Dict[str, float],
+) -> np.ndarray:
+    """Banuba-style mask: eyes and mouth are always transparent so the real face
+    shows through and naturally syncs with every blink and lip movement.
+
+    The mask covers cheeks / forehead / nose; the eye + brow and mouth regions
+    are permanently punched out with a soft feathered edge.
+    """
+    h, w = canvas.shape[:2]
+    result = canvas.copy()
+    alpha = result[:, :, 3].astype(np.float32)
+
+    def fade_region(indices: List[int], strength: float, sigma: float = 7.0) -> None:
+        pts = np.int32(dst[indices])
+        region = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(region, cv2.convexHull(pts), 255)
+        soft = cv2.GaussianBlur(region.astype(np.float32), (0, 0), sigmaX=sigma) / 255.0
+        np.multiply(alpha, 1.0 - soft * strength, out=alpha)
+
+    # Always reveal real eyes + brows so blinks are live
+    fade_region(LEFT_EYE_FULL, 1.0, sigma=9.0)
+    fade_region(RIGHT_EYE_FULL, 1.0, sigma=9.0)
+
+    # Always reveal real mouth so lip movement is live
+    fade_region(MOUTH_OUTER + MOUTH_INNER, 1.0, sigma=10.0)
+
+    result[:, :, 3] = alpha.clip(0, 255).astype(np.uint8)
+    return result
 
 
 def render_cartoon_face(
     frame: np.ndarray,
     points: np.ndarray,
     style: CartoonStyle,
-    _coefficients: Dict[str, float],
+    coefficients: Dict[str, float],
 ) -> np.ndarray:
-    if style.filter_landmarks is not None and style.filter_triangles:
-        canvas = _warp_mesh(frame, style.texture,
-                            style.filter_landmarks, points,
-                            style.filter_triangles)
-        return _composite_filter(frame, canvas, points)
+    """Render the filter as a Banuba-style face mask.
 
-    return _warp_perspective_filter(frame, style.texture, points)
+    1. Perspective placement — aligns the filter to the live face (position,
+       scale, rotation, tilt) via a 4-point warp.
+
+    2. Always-on eye + mouth cutouts — eye/brow and mouth regions are permanently
+       transparent so the real eyes (including blinks) and real lips (including
+       talking/smiling) always show through the mask in sync with the video.
+    """
+    canvas = _warp_perspective_to_canvas(frame.shape, style.texture, points)
+    canvas = _apply_expression_transparency(canvas, points, coefficients)
+    return _composite_filter(frame, canvas, points)
 
 
 def analyze_video(video_url: str) -> Dict[str, object]:
@@ -716,12 +779,13 @@ def analyze_video(video_url: str) -> Dict[str, object]:
         profiles: List[FaceProfile] = []
         sample_snapshots: List[Dict[str, object]] = []
 
+        # static_image_mode=True: correct for random-seek sampling (no stale tracker state)
+        # refine_landmarks=False: iris refinement model not needed for face ID
         with mp_face_mesh.FaceMesh(
-            static_image_mode=False,
+            static_image_mode=True,
             max_num_faces=tuning.max_num_faces,
-            refine_landmarks=True,
+            refine_landmarks=False,
             min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
         ) as face_mesh:
             for frame_index in sample_indices:
                 capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
@@ -729,7 +793,32 @@ def analyze_video(video_url: str) -> Dict[str, object]:
                 if not success:
                     continue
 
-                detections = detect_faces(face_mesh, frame, tuning, with_thumbnails=True)
+                # Downscale before MediaPipe — the model runs much faster on smaller input
+                h0, w0 = frame.shape[:2]
+                if w0 > MAX_ANALYSIS_DETECT_WIDTH:
+                    scale = MAX_ANALYSIS_DETECT_WIDTH / w0
+                    small = cv2.resize(frame, (MAX_ANALYSIS_DETECT_WIDTH, max(1, int(h0 * scale))), interpolation=cv2.INTER_AREA)
+                else:
+                    small = frame
+
+                detections_small = detect_faces(face_mesh, small, tuning, with_thumbnails=False)
+
+                # Scale landmark coords back to full-resolution frame space
+                if w0 > MAX_ANALYSIS_DETECT_WIDTH:
+                    inv = w0 / MAX_ANALYSIS_DETECT_WIDTH
+                    for det in detections_small:
+                        det.points[:] *= inv
+                        det.bbox = (int(det.bbox[0]*inv), int(det.bbox[1]*inv),
+                                    int(det.bbox[2]*inv), int(det.bbox[3]*inv))
+                        det.normalized_box = normalize_box(det.bbox, frame.shape)
+                        det.center[:] *= inv
+                        det.size *= inv
+
+                # Re-extract thumbnails from full-res frame now that bbox is in full coords
+                for det in detections_small:
+                    det.thumbnail_data_url = create_face_thumbnail(frame, det.bbox)
+
+                detections = detections_small
                 matches, unmatched_detections, _ = assign_detections_to_profiles(detections, profiles, frame.shape, frame_index, threshold=1.08)
                 assigned_ids: Dict[int, str] = {}
 
@@ -872,6 +961,7 @@ def process_video(video_url: str, detected_faces: List[Dict[str, object]], filte
         expression_states: Dict[str, ExpressionState] = {face_id: ExpressionState() for face_id in styles_by_face}
         landmark_smoothers: Dict[str, LandmarkSmoother] = {}
         fallback_smoothers: List[LandmarkSmoother] = []
+        fallback_expr_states: List[ExpressionState] = []
         fallback_style = styles_by_face[filter_assignments[0]["faceId"]] if len(filter_assignments) == 1 else None
         frame_counter = 0
 
@@ -899,24 +989,22 @@ def process_video(video_url: str, detected_faces: List[Dict[str, object]], filte
                             continue
 
                         smoother = landmark_smoothers.setdefault(profile.face_id, LandmarkSmoother())
-                        # Reset if face was absent long enough that old position is stale
                         if profile.last_seen_frame >= 0 and frame_counter - profile.last_seen_frame > 10:
                             smoother.reset()
                         update_profile(profile, detection, frame_counter)
                         smoothed_points = smoother.update(detection.points, tuning.smoothing_alpha)
 
-                        coefficients = extract_expression_coefficients(smoothed_points, tuning)
-                        coefficients = expression_states.setdefault(profile.face_id, ExpressionState()).smooth(
-                            coefficients,
-                            tuning.smoothing_alpha,
-                        )
+                        raw_coeff = extract_expression_coefficients(smoothed_points, tuning)
+                        coefficients = expression_states[profile.face_id].smooth(raw_coeff, tuning.smoothing_alpha)
                         frame = render_cartoon_face(frame, smoothed_points, style, coefficients)
                 elif fallback_style:
                     for idx, detection in enumerate(detections):
                         while len(fallback_smoothers) <= idx:
                             fallback_smoothers.append(LandmarkSmoother())
+                            fallback_expr_states.append(ExpressionState())
                         smoothed_points = fallback_smoothers[idx].update(detection.points, tuning.smoothing_alpha)
-                        coefficients = extract_expression_coefficients(smoothed_points, tuning)
+                        raw_coeff = extract_expression_coefficients(smoothed_points, tuning)
+                        coefficients = fallback_expr_states[idx].smooth(raw_coeff, tuning.smoothing_alpha)
                         frame = render_cartoon_face(frame, smoothed_points, fallback_style, coefficients)
 
                 writer.write(frame)

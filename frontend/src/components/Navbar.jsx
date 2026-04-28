@@ -4,7 +4,13 @@ export default function Navbar({ step, goTo }) {
   return (
     <nav className="topnav">
       <div className="logo">
-        <div className="logo-dot">S</div>
+        <img
+          src="/sahal-icon.png"
+          alt="S"
+          className="logo-img"
+          onError={(e) => { e.currentTarget.style.display = "none"; e.currentTarget.nextSibling.style.display = "flex"; }}
+        />
+        <div className="logo-dot" style={{ display: "none" }}>S</div>
         Sahal
       </div>
       <div className="steps-nav">

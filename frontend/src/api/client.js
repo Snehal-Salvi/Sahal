@@ -47,3 +47,8 @@ export async function getVideoStatus(videoId) {
   const { data } = await api.get(`/videos/${videoId}/status`);
   return data;
 }
+
+export async function getBuiltInFilters() {
+  const { data } = await api.get("/filters");
+  return data;
+}

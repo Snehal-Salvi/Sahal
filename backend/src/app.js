@@ -1,7 +1,13 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import videoRoutes from "./routes/video.routes.js";
+import filterRoutes from "./routes/filters.routes.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 const stringifyError = (error) => {
@@ -35,6 +41,8 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
+app.use("/filters", express.static(join(__dirname, "../public/filters")));
+app.use("/api/filters", filterRoutes);
 app.use("/api/videos", videoRoutes);
 
 app.use((error, req, res, next) => {

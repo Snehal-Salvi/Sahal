@@ -1,169 +1,141 @@
 export default function Step2Detect({
-  videoPreviewUrl,
   videoFile,
   analysis,
-  selectedFaceId,
   applySameFilterToAll,
-  setSelectedFaceId,
   setApplySameFilterToAll,
   status,
   error,
   handleAnalyzeFaces,
   goTo,
 }) {
+  const isLoading = status === "uploading" || status === "analyzing";
+  const isDone = !!analysis && !isLoading;
+
   return (
     <div className="s2">
-      <div className="sh">
-        <div className="stag">Step 2</div>
-        <h2>Detect faces in your video</h2>
-        <p>Preview your video, then click "Detect Faces" to scan automatically.</p>
-      </div>
+      {/* ── Error banner ── */}
+      {error && !isLoading && (
+        <div className="d2-error">
+          <span>{error}</span>
+          <button onClick={handleAnalyzeFaces}>Retry</button>
+        </div>
+      )}
 
-      {error && <div className="error-msg">{error}</div>}
-
-      <div className="det-grid">
-        {/* ── Left: video preview + detect button ── */}
-        <div>
-          <div className="vcard" style={{ marginBottom: 10 }}>
-            <div className="varea">
-              {!videoPreviewUrl && (
-                <div className="det-placeholder">
-                  <div style={{ fontSize: 28, marginBottom: 6 }}>🎥</div>
-                  No video selected
-                </div>
-              )}
-
-              {videoPreviewUrl && !analysis && (
-                <video src={videoPreviewUrl} controls playsInline className="det-video" />
-              )}
-
-              {videoPreviewUrl && analysis && (
-                <div className="det-overlay-wrap">
-                  <img src={analysis.representativeFrameDataUrl} alt="Frame" className="rep-frame" />
-                  {analysis.faces.map((face) => {
-                    const box = face.representativeBox;
-                    if (!box) return null;
-                    return (
-                      <div
-                        key={face.faceId}
-                        className="fbox"
-                        style={{
-                          left: `${box.x * 100}%`,
-                          top: `${box.y * 100}%`,
-                          width: `${box.width * 100}%`,
-                          height: `${box.height * 100}%`,
-                        }}
-                      >
-                        <div className="ftag">{face.label} · 98%</div>
-                      </div>
-                    );
-                  })}
-                  <div className="vbadge">
-                    <div className="vdot" />
-                    468 landmarks · {analysis.faces.length}{" "}
-                    {analysis.faces.length === 1 ? "face" : "faces"}
-                  </div>
-                </div>
-              )}
+      {/* ── Loading state ── */}
+      {isLoading && (
+        <div className="d2-loading">
+          <div className="d2l-orbit">
+            <div className="d2l-core">
+              <svg viewBox="0 0 40 40" fill="none">
+                <path d="M14 16c0-3.314 2.686-6 6-6s6 2.686 6 6v1H14v-1z" fill="rgba(244,114,182,0.7)" />
+                <ellipse cx="20" cy="30" rx="8" ry="4.5" fill="rgba(244,114,182,0.7)" />
+              </svg>
             </div>
+            <div className="d2l-ring1" />
+            <div className="d2l-ring2" />
+          </div>
 
-            <div className="vctrls">
-              <div className="vplay">
-                <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-              </div>
-              <div className="vtl"><div className="vtlf" /></div>
-              <span className="vt">{videoFile?.name || "—"}</span>
+          <div className="d2l-status">
+            <div className="d2l-status-label">
+              {status === "uploading" ? "Preparing your video…" : "Looking for faces…"}
+            </div>
+            <div className="d2l-status-sub">
+              {status === "uploading"
+                ? "Just a moment, getting things ready"
+                : "Sit tight, this usually takes a few seconds"}
             </div>
           </div>
 
-          <button
-            className="dbtn"
-            onClick={handleAnalyzeFaces}
-            disabled={!videoFile || status === "uploading" || status === "analyzing"}
-          >
-            <svg viewBox="0 0 24 24">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
-            </svg>
-            <span>
-              {status === "uploading"
-                ? "Uploading…"
-                : status === "analyzing"
-                ? "Scanning…"
-                : analysis
-                ? "Re-detect Faces"
-                : "Detect Faces"}
-            </span>
-          </button>
-        </div>
-
-        {/* ── Right: sidebar ── */}
-        <div className="sidebar">
-          {analysis ? (
-            <>
-              <div className="scard">
-                <div className="scard-t">Detected faces</div>
-                {analysis.faces.map((face) => (
-                  <div
-                    key={face.faceId}
-                    className={`frow${selectedFaceId === face.faceId ? " sel" : ""}`}
-                    onClick={() => setSelectedFaceId(face.faceId)}
-                  >
-                    <div className="fcirc">
-                      <img
-                        src={face.thumbnailDataUrl}
-                        alt={face.label}
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                      />
-                    </div>
-                    <div>
-                      <div className="finfo-n">{face.label}</div>
-                      <div className="finfo-s">Front view</div>
-                    </div>
-                    <div className={`fchk${selectedFaceId === face.faceId ? "" : " off"}`} />
-                  </div>
-                ))}
-              </div>
-
-              <div className="scard">
-                <div className="tog-row">
-                  <div className="tog-title">Same filter for all</div>
-                  <div
-                    className={`tog${applySameFilterToAll ? " on" : ""}`}
-                    onClick={() => setApplySameFilterToAll((v) => !v)}
-                  >
-                    <div className="knob" />
-                  </div>
-                </div>
-                <div className="tog-desc">
-                  Toggle to apply one filter to every detected face at once.
-                </div>
-              </div>
-
-              <div className="scard">
-                <div className="check-row">
-                  <div className="ckdot" />
-                  {analysis.faces.length} {analysis.faces.length === 1 ? "face" : "faces"} detected
-                </div>
-                <div className="check-row"><div className="ckdot" />Landmarks mapped (468 pts)</div>
-                <div className="check-row"><div className="ckdot" />Expression tracking ready</div>
-                <button className="ready-btn" onClick={() => goTo(3)}>Choose Filters →</button>
-              </div>
-            </>
-          ) : (
-            <div className="scard">
-              <div className="scard-t">Tips</div>
-              <div style={{ fontSize: 11, color: "#666", lineHeight: 1.5, marginBottom: 6 }}>
-                <span style={{ color: "#f472b6", fontWeight: 600 }}>Best results:</span>{" "}
-                Use well-lit videos with faces visible from the front.
-              </div>
-              <div style={{ fontSize: 11, color: "#666", lineHeight: 1.5 }}>
-                <span style={{ color: "#f472b6", fontWeight: 600 }}>Multiple faces:</span>{" "}
-                Each person gets their own filter in the next step.
-              </div>
+          {videoFile && (
+            <div className="d2l-file-chip">
+              <span className="d2l-file-dot" />
+              {videoFile.name}
             </div>
           )}
+
+          <div className="d2l-track">
+            <div className="d2l-track-fill" />
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* ── Results state ── */}
+      {isDone && (
+        <div className="d2-result">
+          {/* Frame with bounding boxes */}
+          <div className="d2r-frame">
+            <img
+              src={analysis.representativeFrameDataUrl}
+              alt="Preview frame"
+              className="d2r-img"
+            />
+            {analysis.faces.map((face) => {
+              const b = face.representativeBox;
+              if (!b) return null;
+              return (
+                <div
+                  key={face.faceId}
+                  className="d2r-fbox"
+                  style={{
+                    left: `${b.x * 100}%`,
+                    top: `${b.y * 100}%`,
+                    width: `${b.width * 100}%`,
+                    height: `${b.height * 100}%`,
+                  }}
+                >
+                  <span className="d2r-ftag">{face.label}</span>
+                </div>
+              );
+            })}
+            <div className="d2r-badge">
+              <div className="d2r-dot" />
+              {analysis.faces.length} {analysis.faces.length === 1 ? "face" : "faces"} detected
+            </div>
+          </div>
+
+          {/* Face cards */}
+          <div className="d2r-faces">
+            {analysis.faces.map((face) => (
+              <div key={face.faceId} className="d2r-face">
+                <div className="d2r-avatar">
+                  <img src={face.thumbnailDataUrl} alt={face.label} />
+                </div>
+                <div className="d2r-face-info">
+                  <div className="d2r-face-name">{face.label}</div>
+                  <div className="d2r-face-status">
+                    <span className="d2r-face-ok">✓</span> Ready
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {analysis.faces.length > 1 && (
+              <div className="d2r-same-row">
+                <div className="d2r-same-text">
+                  <span className="d2r-same-title">Apply same filter</span>
+                  <span className="d2r-same-sub">One style for every face</span>
+                </div>
+                <div
+                  className={`tog${applySameFilterToAll ? " on" : ""}`}
+                  onClick={() => setApplySameFilterToAll((v) => !v)}
+                >
+                  <div className="knob" />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Actions */}
+          <button className="d2r-cta" onClick={() => goTo(3)}>
+            Choose Filters
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+          </button>
+
+          <button className="d2r-rescan" onClick={handleAnalyzeFaces}>
+            Re-scan faces
+          </button>
+        </div>
+      )}
     </div>
   );
 }
