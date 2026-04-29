@@ -1,0 +1,148 @@
+.s3 { padding: 24px 20px; max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+/* Preview */
+.f3-preview {
+  width: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #111;
+  border: 1px solid rgba(255,255,255,0.06);
+  position: relative;
+  aspect-ratio: 16/7;
+}
+.f3-prev-inner { width: 100%; height: 100%; position: relative; }
+.f3-prev-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.f3-prev-box {
+  position: absolute;
+  border: 2px solid rgba(244,114,182,0.45);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.f3-prev-box.active { border-color: #f472b6; box-shadow: 0 0 10px rgba(244,114,182,0.3); }
+.f3-prev-filter { width: 100%; height: 100%; object-fit: contain; opacity: 0.85; }
+.f3-prev-label {
+  position: absolute; top: 10px; left: 10px;
+  background: rgba(0,0,0,0.65); backdrop-filter: blur(4px);
+  border-radius: 6px; padding: 3px 9px;
+  font-size: 9px; font-weight: 600; color: #f472b6; letter-spacing: 0.5px;
+}
+.f3-prev-empty { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 12px; color: #444; }
+
+/* Face selector bar */
+.f3-face-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.f3-face-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.f3-ftab {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 12px 6px 6px;
+  background: #181818; border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 20px; cursor: pointer; font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 11px; font-weight: 600; color: #666;
+  transition: border-color 0.15s, color 0.15s;
+}
+.f3-ftab.on { border-color: #f472b6; color: #fff; background: rgba(244,114,182,0.07); }
+.f3-ftab.done { border-color: rgba(74,222,128,0.3); color: #4ade80; }
+.f3-ftab-av {
+  width: 24px; height: 24px; border-radius: 50%; overflow: hidden;
+  background: #111; position: relative; flex-shrink: 0;
+}
+.f3-ftab-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.f3-ftab-ck {
+  position: absolute; inset: 0; background: rgba(74,222,128,0.8);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: #0a0a0a; font-weight: 700;
+}
+.f3-same-tog {
+  display: flex; align-items: center; gap: 7px; margin-left: auto;
+  font-size: 11px; color: #666;
+}
+
+/* Active face info */
+.f3-active-face {
+  display: flex; align-items: center; gap: 10px;
+  background: #181818; border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px; padding: 10px 14px;
+}
+.f3-af-av { width: 36px; height: 36px; border-radius: 50%; overflow: hidden; border: 2px solid rgba(244,114,182,0.3); flex-shrink: 0; }
+.f3-af-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.f3-af-name { font-size: 13px; font-weight: 600; color: #fff; margin-bottom: 2px; }
+.f3-af-filter { font-size: 11px; color: #666; }
+.f3-af-badge {
+  margin-left: auto; background: rgba(244,114,182,0.1);
+  color: #f472b6; font-size: 9px; font-weight: 700;
+  padding: 3px 9px; border-radius: 6px;
+}
+
+/* Filter library */
+.f3-lib { display: flex; flex-direction: column; gap: 12px; }
+.f3-section { display: flex; flex-direction: column; gap: 8px; }
+.f3-sec-hdr { display: flex; align-items: center; gap: 8px; }
+.f3-sec-title { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.8px; }
+.f3-sec-badge {
+  font-size: 10px; font-weight: 600; padding: 2px 8px;
+  border-radius: 6px; background: rgba(255,255,255,0.06); color: #555;
+}
+.f3-sec-badge.builtin { background: rgba(244,114,182,0.1); color: #f472b6; }
+.f3-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; }
+
+/* Filter card */
+.f3-card {
+  position: relative; border-radius: 12px;
+  border: 1.5px solid rgba(255,255,255,0.07);
+  padding: 10px 8px; background: #181818;
+  cursor: pointer; display: flex; flex-direction: column;
+  align-items: center; gap: 6px; transition: border-color 0.15s;
+}
+.f3-card:hover { border-color: rgba(244,114,182,0.3); }
+.f3-card.on { border-color: #f472b6; background: rgba(244,114,182,0.06); }
+.f3-check {
+  position: absolute; top: 5px; left: 5px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #f472b6; color: #0a0a0a;
+  font-size: 9px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.f3-thumb { width: 48px; height: 48px; border-radius: 8px; overflow: hidden; background: #111; }
+.f3-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.f3-name { font-size: 9px; color: #666; text-align: center; word-break: break-all; line-height: 1.3; }
+.f3-card.on .f3-name { color: #f472b6; }
+.f3-builtin { position: absolute; top: 5px; right: 5px; font-size: 9px; color: #f472b6; }
+.f3-rm {
+  position: absolute; top: 4px; right: 4px;
+  background: rgba(239,68,68,0.15); border: none;
+  color: #ef4444; font-size: 11px; font-weight: 700;
+  cursor: pointer; padding: 1px 5px; border-radius: 4px; line-height: 1;
+}
+
+/* Upload + process */
+.f3-loading { font-size: 12px; color: #555; text-align: center; padding: 12px 0; }
+.f3-upload {
+  display: flex; align-items: center; gap: 10px;
+  background: transparent; border: 1.5px dashed rgba(244,114,182,0.25);
+  border-radius: 12px; padding: 12px 16px;
+  cursor: pointer; width: 100%; font-family: 'Plus Jakarta Sans', sans-serif;
+  transition: border-color 0.2s, background 0.2s;
+}
+.f3-upload:hover { border-color: rgba(244,114,182,0.5); background: rgba(244,114,182,0.03); }
+.f3-upload-plus {
+  width: 32px; height: 32px; border-radius: 9px;
+  background: rgba(244,114,182,0.1); color: #f472b6;
+  font-size: 20px; font-weight: 300; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.f3-upload-title { font-size: 12px; font-weight: 600; color: #fff; text-align: left; }
+.f3-upload-sub { font-size: 10px; color: #555; text-align: left; margin-top: 1px; }
+.f3-process {
+  width: 100%; background: linear-gradient(135deg, #f472b6, #c026a0);
+  color: #fff; border: none; padding: 14px; border-radius: 12px;
+  font-size: 14px; font-weight: 700; cursor: pointer;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  box-shadow: 0 4px 18px rgba(244,114,182,0.3);
+  transition: box-shadow 0.2s, transform 0.15s, opacity 0.2s;
+}
+.f3-process:hover { box-shadow: 0 6px 24px rgba(244,114,182,0.45); transform: translateY(-1px); }
+.f3-process.dim { opacity: 0.5; cursor: not-allowed; }
+.f3-process svg { width: 15px; height: 15px; fill: #fff; }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import "./Step1Upload.css";
 
 export default function Step1Upload({ onChooseFile, onDropFile }) {
   const [dragging, setDragging] = useState(false);

@@ -1,3 +1,5 @@
+import "./Step5Output.css";
+
 export default function Step5Output({
   videoRecord,
   analysis,

@@ -1,3 +1,5 @@
+import "./Navbar.css";
+
 const STEP_LABELS = ["Upload", "Detect", "Filters", "Processing", "Download"];
 
 export default function Navbar({ step, goTo }) {

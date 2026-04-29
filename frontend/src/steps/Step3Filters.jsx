@@ -1,3 +1,5 @@
+import "./Step3Filters.css";
+
 function FilterCard({ filter, isSelected, onSelect, onRemove }) {
   return (
     <div

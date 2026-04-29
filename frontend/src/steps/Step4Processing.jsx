@@ -1,4 +1,5 @@
 import ProcessingStep from "../components/ProcessingStep";
+import "./Step4Processing.css";
 
 export default function Step4Processing({ analysis, filterLibrary, assignedFilters, videoRecord, status }) {
   const procPct =

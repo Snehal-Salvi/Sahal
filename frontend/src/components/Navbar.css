@@ -1,0 +1,102 @@
+.topnav {
+  width: 100%;
+  background: rgba(10,10,10,0.95);
+  border-bottom: 1px solid rgba(244,114,182,0.12);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 0 16px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  gap: 12px;
+}
+.logo {
+  font-family: 'Playfair Display', serif;
+  font-size: 17px;
+  font-weight: 700;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.logo-dot {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f472b6, #c026a0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(244,114,182,0.4);
+}
+.logo em { color: #f472b6; font-style: normal; }
+.logo-img { width: 30px; height: 30px; object-fit: contain; border-radius: 8px; }
+
+.steps-nav {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow: hidden;
+}
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  transition: background 0.15s;
+}
+.step:hover:not(.on):not(.done) { background: rgba(255,255,255,0.04); }
+.step-n {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  background: #1e1e1e;
+  color: #444;
+  border: 1px solid rgba(255,255,255,0.07);
+  flex-shrink: 0;
+}
+.step-l {
+  font-size: 9px;
+  font-weight: 500;
+  color: #444;
+  letter-spacing: 0.2px;
+}
+.step.on .step-l { color: #f472b6; font-weight: 600; }
+.step.on .step-n {
+  background: #f472b6;
+  color: #fff;
+  border-color: #f472b6;
+  box-shadow: 0 0 8px rgba(244,114,182,0.5);
+}
+.step.done .step-l { color: #4ade80; }
+.step.done .step-n {
+  background: rgba(74,222,128,0.12);
+  color: #4ade80;
+  border-color: rgba(74,222,128,0.25);
+  font-size: 8px;
+}
+.step-line { width: 14px; height: 1px; background: rgba(255,255,255,0.08); flex-shrink: 0; margin-bottom: 11px; }
+.nav-av { display: none; }
+
+@media (max-width: 600px) {
+  .step-l { display: none; }
+}
