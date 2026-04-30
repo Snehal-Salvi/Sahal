@@ -11,6 +11,12 @@ export default function Step4Processing({ analysis, filterLibrary, assignedFilte
         <div className="proc-hero">
           <div className="spin"><div className="spin-in">🎥</div></div>
           <h2>Processing your video</h2>
+          {status !== "completed" && (
+            <div className="proc-status">
+              <span className="proc-status-dot" />
+              Detecting faces…
+            </div>
+          )}
           <p>
             Applying expression-aware cartoon filters frame by frame using
             MediaPipe Face Mesh and OpenCV.

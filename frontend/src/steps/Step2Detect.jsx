@@ -60,13 +60,9 @@ export default function Step2Detect({
               <div className="d2l-ring2" />
             </div>
             <div className="d2l-status">
-              <div className="d2l-status-label">
-                {status === "uploading" ? "Preparing your video…" : "Looking for faces…"}
-              </div>
+              <div className="d2l-status-label">Detecting faces…</div>
               <div className="d2l-status-sub">
-                {status === "uploading"
-                  ? "Just a moment, getting things ready"
-                  : "Sit tight, this usually takes a few seconds"}
+                Sit tight, this usually takes a few seconds
               </div>
             </div>
             {videoFile && (
@@ -143,7 +139,7 @@ export default function Step2Detect({
           <div className="d2-scan-wrap">
             <div className="d2-scan-header">
               <span className="d2-scan-status-dot" />
-              {status === "uploading" ? "Preparing…" : `Scanning · ${foundCount} found`}
+              {`Scanning · ${foundCount} found`}
             </div>
 
             <div className="d2-scan-frame">

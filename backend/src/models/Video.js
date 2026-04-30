@@ -46,11 +46,11 @@ const videoSchema = new mongoose.Schema(
   {
     originalUrl: {
       type: String,
-      required: true
+      default: ""
     },
     originalPublicId: {
       type: String,
-      required: true
+      default: ""
     },
     processedUrl: String,
     processedPublicId: String,

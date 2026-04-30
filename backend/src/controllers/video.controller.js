@@ -1,8 +1,13 @@
 import multer from "multer";
 import { Video } from "../models/Video.js";
 import { videoQueue } from "../queues/videoQueue.js";
-import { analyzeVideoWithAI } from "../services/ai.service.js";
+import { analyzeVideoBufferWithAI, analyzeVideoWithAI } from "../services/ai.service.js";
 import { uploadBuffer } from "../services/cloudinary.service.js";
+
+// Tracks Cloudinary uploads still in flight after the response was sent.
+// queueVideoProcessing awaits the promise here if the user clicks Process
+// before the upload finishes. Entries are deleted on resolve/reject.
+const pendingCloudinaryUploads = new Map();
 
 const storage = multer.memoryStorage();
 const pngSignature = Buffer.from([
@@ -84,20 +89,56 @@ export async function uploadVideo(req, res) {
     return res.status(400).json({ message: "Video file is required" });
   }
 
-  const uploadResult = await uploadBuffer(req.file.buffer, {
+  // Kick off Cloudinary upload in parallel with face analysis. The user only
+  // needs the originalUrl when they click Process, so we don't block the
+  // response on it — we wait on the promise later if needed.
+  const cloudinaryPromise = uploadBuffer(req.file.buffer, {
     folder: "cartoon-face-filter/originals",
-    resource_type: "video"
+    resource_type: "video",
+  });
+
+  const analysis = await analyzeVideoBufferWithAI({
+    buffer: req.file.buffer,
+    filename: req.file.originalname
   });
 
   const video = await Video.create({
-    originalUrl: uploadResult.secure_url,
-    originalPublicId: uploadResult.public_id,
+    detectedFaces: (analysis.faces || []).map((face) => ({
+      faceId: face.faceId,
+      label: face.label,
+      embedding: face.embedding || [],
+      representativeBox: face.representativeBox || undefined
+    })),
     status: "uploaded"
   });
 
+  // Finalize Cloudinary upload in the background and write originalUrl when ready.
+  pendingCloudinaryUploads.set(
+    String(video._id),
+    cloudinaryPromise
+      .then(async (uploadResult) => {
+        await Video.findByIdAndUpdate(video._id, {
+          originalUrl: uploadResult.secure_url,
+          originalPublicId: uploadResult.public_id
+        });
+        return uploadResult;
+      })
+      .catch(async (err) => {
+        await Video.findByIdAndUpdate(video._id, {
+          status: "failed",
+          error: `Upload failed: ${err.message}`
+        });
+        throw err;
+      })
+      .finally(() => {
+        pendingCloudinaryUploads.delete(String(video._id));
+      })
+  );
+
   return res.status(201).json({
-    message: "Video uploaded successfully",
-    video
+    message: "Video uploaded and analyzed",
+    video,
+    analysis
   });
 }
 
@@ -143,6 +184,28 @@ export async function queueVideoProcessing(req, res) {
     return res.status(400).json({
       message: "Analyze faces before queueing video processing"
     });
+  }
+
+  // Cloudinary upload may still be in flight (we returned the upload response
+  // before it finished). Wait for it here so the worker has originalUrl.
+  if (!video.originalUrl) {
+    const pending = pendingCloudinaryUploads.get(String(video._id));
+    if (pending) {
+      try {
+        await pending;
+      } catch (err) {
+        return res.status(500).json({ message: `Upload failed: ${err.message}` });
+      }
+      // Refresh from DB to pick up originalUrl set by the upload finalizer
+      const refreshed = await Video.findById(videoId);
+      if (refreshed) {
+        video.originalUrl = refreshed.originalUrl;
+        video.originalPublicId = refreshed.originalPublicId;
+      }
+    }
+    if (!video.originalUrl) {
+      return res.status(409).json({ message: "Video upload has not completed yet" });
+    }
   }
 
   const knownFaceIds = new Set(video.detectedFaces.map((face) => face.faceId));
@@ -198,15 +261,13 @@ export async function queueVideoProcessing(req, res) {
 
 export async function analyzeVideoFaces(req, res) {
   const { videoId } = req.params;
-  const video = await Video.findById(videoId);
 
+  const video = await Video.findById(videoId);
   if (!video) {
     return res.status(404).json({ message: "Video not found" });
   }
 
-  const analysis = await analyzeVideoWithAI({
-    videoUrl: video.originalUrl
-  });
+  const analysis = await analyzeVideoWithAI({ videoUrl: video.originalUrl });
 
   video.detectedFaces = (analysis.faces || []).map((face) => ({
     faceId: face.faceId,

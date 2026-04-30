@@ -179,10 +179,20 @@ def load_expression_tuning() -> ExpressionTuning:
 
 
 def download_file(url: str, destination: str) -> None:
-    with requests.get(url, stream=True, timeout=120) as response:
-        response.raise_for_status()
-        with open(destination, "wb") as file_handle:
-            shutil.copyfileobj(response.raw, file_handle)
+    import time as _time
+    # Cloudinary returns 423 Locked while a derived asset is still being generated.
+    # Retry with backoff so the first /analyze after upload doesn't fail.
+    delays = [1, 2, 4, 8, 12]
+    for attempt, delay in enumerate([0, *delays]):
+        if delay:
+            _time.sleep(delay)
+        with requests.get(url, stream=True, timeout=300) as response:
+            if response.status_code == 423 and attempt < len(delays):
+                continue
+            response.raise_for_status()
+            with open(destination, "wb") as file_handle:
+                shutil.copyfileobj(response.raw, file_handle)
+            return
 
 
 def landmark_to_point(landmark, width: int, height: int) -> np.ndarray:
@@ -765,118 +775,125 @@ def render_cartoon_face(
 
 
 def analyze_video(video_url: str) -> Dict[str, object]:
-    tuning = load_expression_tuning()
-
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = os.path.join(tmpdir, "analysis-input.mp4")
         download_file(video_url, input_path)
+        return _analyze_video_from_path(input_path)
 
-        capture = cv2.VideoCapture(input_path)
-        if not capture.isOpened():
-            raise ValueError("Input video could not be opened")
 
-        sample_indices = sample_frame_indices(capture, ANALYSIS_SAMPLE_FRAMES)
-        profiles: List[FaceProfile] = []
-        sample_snapshots: List[Dict[str, object]] = []
+def analyze_video_from_path(input_path: str) -> Dict[str, object]:
+    return _analyze_video_from_path(input_path)
 
-        # static_image_mode=True: correct for random-seek sampling (no stale tracker state)
-        # refine_landmarks=False: iris refinement model not needed for face ID
-        with mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=tuning.max_num_faces,
-            refine_landmarks=False,
-            min_detection_confidence=0.5,
-        ) as face_mesh:
-            for frame_index in sample_indices:
-                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-                success, frame = capture.read()
-                if not success:
-                    continue
 
-                # Downscale before MediaPipe — the model runs much faster on smaller input
-                h0, w0 = frame.shape[:2]
-                if w0 > MAX_ANALYSIS_DETECT_WIDTH:
-                    scale = MAX_ANALYSIS_DETECT_WIDTH / w0
-                    small = cv2.resize(frame, (MAX_ANALYSIS_DETECT_WIDTH, max(1, int(h0 * scale))), interpolation=cv2.INTER_AREA)
-                else:
-                    small = frame
+def _analyze_video_from_path(input_path: str) -> Dict[str, object]:
+    tuning = load_expression_tuning()
 
-                detections_small = detect_faces(face_mesh, small, tuning, with_thumbnails=False)
+    capture = cv2.VideoCapture(input_path)
+    if not capture.isOpened():
+        raise ValueError("Input video could not be opened")
 
-                # Scale landmark coords back to full-resolution frame space
-                if w0 > MAX_ANALYSIS_DETECT_WIDTH:
-                    inv = w0 / MAX_ANALYSIS_DETECT_WIDTH
-                    for det in detections_small:
-                        det.points[:] *= inv
-                        det.bbox = (int(det.bbox[0]*inv), int(det.bbox[1]*inv),
-                                    int(det.bbox[2]*inv), int(det.bbox[3]*inv))
-                        det.normalized_box = normalize_box(det.bbox, frame.shape)
-                        det.center[:] *= inv
-                        det.size *= inv
+    sample_indices = sample_frame_indices(capture, ANALYSIS_SAMPLE_FRAMES)
+    profiles: List[FaceProfile] = []
+    sample_snapshots: List[Dict[str, object]] = []
 
-                # Re-extract thumbnails from full-res frame now that bbox is in full coords
+    # static_image_mode=True: correct for random-seek sampling (no stale tracker state)
+    # refine_landmarks=False: iris refinement model not needed for face ID
+    with mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=tuning.max_num_faces,
+        refine_landmarks=False,
+        min_detection_confidence=0.5,
+    ) as face_mesh:
+        for frame_index in sample_indices:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            success, frame = capture.read()
+            if not success:
+                continue
+
+            # Downscale before MediaPipe — the model runs much faster on smaller input
+            h0, w0 = frame.shape[:2]
+            if w0 > MAX_ANALYSIS_DETECT_WIDTH:
+                scale = MAX_ANALYSIS_DETECT_WIDTH / w0
+                small = cv2.resize(frame, (MAX_ANALYSIS_DETECT_WIDTH, max(1, int(h0 * scale))), interpolation=cv2.INTER_AREA)
+            else:
+                small = frame
+
+            detections_small = detect_faces(face_mesh, small, tuning, with_thumbnails=False)
+
+            # Scale landmark coords back to full-resolution frame space
+            if w0 > MAX_ANALYSIS_DETECT_WIDTH:
+                inv = w0 / MAX_ANALYSIS_DETECT_WIDTH
                 for det in detections_small:
-                    det.thumbnail_data_url = create_face_thumbnail(frame, det.bbox)
+                    det.points[:] *= inv
+                    det.bbox = (int(det.bbox[0]*inv), int(det.bbox[1]*inv),
+                                int(det.bbox[2]*inv), int(det.bbox[3]*inv))
+                    det.normalized_box = normalize_box(det.bbox, frame.shape)
+                    det.center[:] *= inv
+                    det.size *= inv
 
-                detections = detections_small
-                matches, unmatched_detections, _ = assign_detections_to_profiles(detections, profiles, frame.shape, frame_index, threshold=1.08)
-                assigned_ids: Dict[int, str] = {}
+            # Re-extract thumbnails from full-res frame now that bbox is in full coords
+            for det in detections_small:
+                det.thumbnail_data_url = create_face_thumbnail(frame, det.bbox)
 
-                for detection_index, profile_index in matches:
-                    profile = profiles[profile_index]
-                    update_profile(profile, detections[detection_index], frame_index)
-                    assigned_ids[detection_index] = profile.face_id
+            detections = detections_small
+            matches, unmatched_detections, _ = assign_detections_to_profiles(detections, profiles, frame.shape, frame_index, threshold=1.08)
+            assigned_ids: Dict[int, str] = {}
 
-                for detection_index in unmatched_detections:
-                    next_id = len(profiles) + 1
-                    detection = detections[detection_index]
-                    profile = FaceProfile(
-                        face_id=f"face-{next_id}",
-                        label=f"Face {next_id}",
-                        descriptor=detection.descriptor.copy(),
-                    )
-                    update_profile(profile, detection, frame_index)
-                    profiles.append(profile)
-                    assigned_ids[detection_index] = profile.face_id
+            for detection_index, profile_index in matches:
+                profile = profiles[profile_index]
+                update_profile(profile, detections[detection_index], frame_index)
+                assigned_ids[detection_index] = profile.face_id
 
-                sample_snapshots.append(
-                    {
-                        "frame": resize_for_preview(frame),
-                        "faces": [
-                            {
-                                "faceId": assigned_ids.get(index),
-                                "representativeBox": detection.normalized_box,
-                            }
-                            for index, detection in enumerate(detections)
-                            if assigned_ids.get(index)
-                        ],
-                    }
+            for detection_index in unmatched_detections:
+                next_id = len(profiles) + 1
+                detection = detections[detection_index]
+                profile = FaceProfile(
+                    face_id=f"face-{next_id}",
+                    label=f"Face {next_id}",
+                    descriptor=detection.descriptor.copy(),
                 )
+                update_profile(profile, detection, frame_index)
+                profiles.append(profile)
+                assigned_ids[detection_index] = profile.face_id
 
-        capture.release()
-
-        if not profiles:
-            raise ValueError("No faces were detected in the uploaded video")
-
-        representative_snapshot = max(sample_snapshots, key=lambda snapshot: len(snapshot["faces"]))
-        preview_boxes = {face["faceId"]: face["representativeBox"] for face in representative_snapshot["faces"]}
-
-        faces = []
-        for profile in sorted(profiles, key=lambda item: item.face_id):
-            faces.append(
+            sample_snapshots.append(
                 {
-                    "faceId": profile.face_id,
-                    "label": profile.label,
-                    "thumbnailDataUrl": profile.thumbnail_data_url,
-                    "representativeBox": preview_boxes.get(profile.face_id, profile.representative_box),
-                    "embedding": [round(float(value), 6) for value in profile.descriptor.tolist()],
+                    "frame": resize_for_preview(frame),
+                    "faces": [
+                        {
+                            "faceId": assigned_ids.get(index),
+                            "representativeBox": detection.normalized_box,
+                        }
+                        for index, detection in enumerate(detections)
+                        if assigned_ids.get(index)
+                    ],
                 }
             )
 
-        return {
-            "representativeFrameDataUrl": encode_image_data_url(representative_snapshot["frame"], ".jpg"),
-            "faces": faces,
-        }
+    capture.release()
+
+    if not profiles:
+        raise ValueError("No faces were detected in the uploaded video")
+
+    representative_snapshot = max(sample_snapshots, key=lambda snapshot: len(snapshot["faces"]))
+    preview_boxes = {face["faceId"]: face["representativeBox"] for face in representative_snapshot["faces"]}
+
+    faces = []
+    for profile in sorted(profiles, key=lambda item: item.face_id):
+        faces.append(
+            {
+                "faceId": profile.face_id,
+                "label": profile.label,
+                "thumbnailDataUrl": profile.thumbnail_data_url,
+                "representativeBox": preview_boxes.get(profile.face_id, profile.representative_box),
+                "embedding": [round(float(value), 6) for value in profile.descriptor.tolist()],
+            }
+        )
+
+    return {
+        "representativeFrameDataUrl": encode_image_data_url(representative_snapshot["frame"], ".jpg"),
+        "faces": faces,
+    }
 
 
 def mux_original_audio(input_video_path: str, processed_video_path: str, output_video_path: str) -> None:

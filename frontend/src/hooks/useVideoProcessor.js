@@ -39,6 +39,9 @@ export function useVideoProcessor() {
   const filterInputRef = useRef(null);
   // Tracks the file we already auto-triggered analysis for, to avoid re-firing
   const autoAnalyzedKeyRef = useRef("");
+  // Holds the in-flight upload promise started the moment a file is picked,
+  // so ensureVideoUploaded can await it instead of starting a second upload.
+  const pendingUploadRef = useRef(null);
 
   useEffect(() => {
     videoPreviewRef.current = videoPreviewUrl;
@@ -136,12 +139,18 @@ export function useVideoProcessor() {
   }
 
   async function ensureVideoUploaded() {
-    if (videoRecord?._id) return videoRecord;
+    if (videoRecord?._id) return { video: videoRecord, analysis: null };
     if (!videoFile) throw new Error("Choose a video file first.");
     setStatus("uploading");
-    const res = await uploadVideo(videoFile);
+    let res;
+    if (pendingUploadRef.current) {
+      res = await pendingUploadRef.current;
+      pendingUploadRef.current = null;
+    } else {
+      res = await uploadVideo(videoFile);
+    }
     setVideoRecord(res.video);
-    return res.video;
+    return { video: res.video, analysis: res.analysis || null };
   }
 
   function applyVideoFile(file) {
@@ -150,11 +159,14 @@ export function useVideoProcessor() {
     setVideoRecord(null);
     setAnalysis(null);
     resetSelections();
-    setStatus("idle");
+    setStatus("uploading");
     setError("");
     if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
     setVideoPreviewUrl(URL.createObjectURL(file));
     goTo(2);
+    // Start uploading immediately while the user sees the Step 2 loading screen,
+    // so ensureVideoUploaded just awaits this promise instead of starting fresh.
+    pendingUploadRef.current = uploadVideo(file);
   }
 
   function handleVideoFileChange(event) {
@@ -165,16 +177,32 @@ export function useVideoProcessor() {
     applyVideoFile(file);
   }
 
+  // Minimum time the step-2 scanning animation stays visible, even if the
+  // backend returns faster. Keeps the UX from flickering past too quickly.
+  const MIN_ANALYZE_DURATION_MS = 10000;
+
   async function handleAnalyzeFaces() {
     if (!videoFile) { setError("Choose a video file first."); return; }
     try {
       setError("");
-      const uploadedVideo = await ensureVideoUploaded();
       setStatus("analyzing");
-      const response = await analyzeVideoFaces(uploadedVideo._id);
-      const detectedFaces = response.analysis?.faces || [];
-      setAnalysis(response.analysis);
-      setVideoRecord(response.video);
+      const startedAt = Date.now();
+      const { video, analysis: uploadAnalysis } = await ensureVideoUploaded();
+      // Faces come back from /upload now — only fall back to /analyze if we
+      // somehow have a video record without analysis (e.g. legacy record).
+      let analysisResult = uploadAnalysis;
+      if (!analysisResult) {
+        const response = await analyzeVideoFaces(video._id);
+        analysisResult = response.analysis;
+        setVideoRecord(response.video);
+      }
+      const elapsed = Date.now() - startedAt;
+      const remaining = MIN_ANALYZE_DURATION_MS - elapsed;
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
+      const detectedFaces = analysisResult?.faces || [];
+      setAnalysis(analysisResult);
       resetSelections(detectedFaces);
       setStatus("ready");
     } catch (err) {
@@ -228,7 +256,7 @@ export function useVideoProcessor() {
     goTo(4);
     setStatus("uploading");
     try {
-      const uploadedVideo = await ensureVideoUploaded();
+      const { video: uploadedVideo } = await ensureVideoUploaded();
       const uploadCache = new Map();
       for (const filter of filterLibrary) {
         if (Object.values(assignedFilters).includes(filter.id)) {

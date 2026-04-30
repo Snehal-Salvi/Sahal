@@ -1,4 +1,5 @@
 import axios from "axios";
+import FormData from "form-data";
 
 function unwrapAIServiceError(error) {
   const responseBody = error.response?.data;
@@ -35,6 +36,28 @@ export async function analyzeVideoWithAI({ videoUrl }) {
       },
       {
         timeout: 0
+      }
+    );
+
+    return response.data;
+  } catch (error) {
+    unwrapAIServiceError(error);
+  }
+}
+
+export async function analyzeVideoBufferWithAI({ buffer, filename }) {
+  try {
+    const form = new FormData();
+    form.append("video", buffer, { filename: filename || "video.mp4" });
+
+    const response = await axios.post(
+      `${process.env.AI_SERVICE_URL}/analyze-upload`,
+      form,
+      {
+        headers: form.getHeaders(),
+        timeout: 0,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
       }
     );
 
