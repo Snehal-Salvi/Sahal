@@ -39,16 +39,11 @@ export default function VideoUploader() {
 
       {p.step === 2 && (
         <Step2Detect
-          videoPreviewUrl={p.videoPreviewUrl}
           videoFile={p.videoFile}
           analysis={p.analysis}
-          selectedFaceId={p.selectedFaceId}
-          applySameFilterToAll={p.applySameFilterToAll}
           status={p.status}
           error={p.error}
           handleAnalyzeFaces={p.handleAnalyzeFaces}
-          setSelectedFaceId={p.setSelectedFaceId}
-          setApplySameFilterToAll={p.setApplySameFilterToAll}
           goTo={p.goTo}
         />
       )}

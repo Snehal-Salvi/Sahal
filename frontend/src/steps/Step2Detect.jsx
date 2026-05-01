@@ -9,8 +9,6 @@ const FAKE_BOXES = [
 export default function Step2Detect({
   videoFile,
   analysis,
-  applySameFilterToAll,
-  setApplySameFilterToAll,
   status,
   error,
   handleAnalyzeFaces,
@@ -106,20 +104,6 @@ export default function Step2Detect({
                 </div>
               ))}
 
-              {analysis.faces.length > 1 && (
-                <div className="d2r-same-row">
-                  <div>
-                    <span className="d2r-same-title">Apply same filter</span>
-                    <span className="d2r-same-sub"> — one style for everyone</span>
-                  </div>
-                  <div
-                    className={`tog${applySameFilterToAll ? " on" : ""}`}
-                    onClick={() => setApplySameFilterToAll((v) => !v)}
-                  >
-                    <div className="knob" />
-                  </div>
-                </div>
-              )}
             </div>
 
             <button className="d2r-cta" onClick={() => goTo(3)}>
@@ -177,32 +161,34 @@ export default function Step2Detect({
 
         {isDone && (
           <div className="d2r-frame">
-            <img
-              src={analysis.representativeFrameDataUrl}
-              alt="Preview frame"
-              className="d2r-img"
-            />
-            {analysis.faces.map((face) => {
-              const b = face.representativeBox;
-              if (!b) return null;
-              return (
-                <div
-                  key={face.faceId}
-                  className="d2r-fbox"
-                  style={{
-                    left: `${b.x * 100}%`,
-                    top: `${b.y * 100}%`,
-                    width: `${b.width * 100}%`,
-                    height: `${b.height * 100}%`,
-                  }}
-                >
-                  <span className="d2r-ftag">{face.label}</span>
-                </div>
-              );
-            })}
-            <div className="d2r-badge">
-              <div className="d2r-dot" />
-              {analysis.faces.length} {analysis.faces.length === 1 ? "face" : "faces"} detected
+            <div className="d2r-stage">
+              <img
+                src={analysis.representativeFrameDataUrl}
+                alt="Preview frame"
+                className="d2r-img"
+              />
+              {analysis.faces.map((face) => {
+                const b = face.representativeBox;
+                if (!b) return null;
+                return (
+                  <div
+                    key={face.faceId}
+                    className="d2r-fbox"
+                    style={{
+                      left: `${b.x * 100}%`,
+                      top: `${b.y * 100}%`,
+                      width: `${b.width * 100}%`,
+                      height: `${b.height * 100}%`,
+                    }}
+                  >
+                    <span className="d2r-ftag">{face.label}</span>
+                  </div>
+                );
+              })}
+              <div className="d2r-badge">
+                <div className="d2r-dot" />
+                {analysis.faces.length} {analysis.faces.length === 1 ? "face" : "faces"} detected
+              </div>
             </div>
           </div>
         )}

@@ -288,44 +288,68 @@
 }
 .d2-scan-footer { font-size: 11px; color: #3d2e38; text-align: center; }
 
-/* Done — right side: real frame */
+/* Done — right side: real frame.
+   The outer .d2r-frame is a wide centering surface; .d2r-stage wraps tightly
+   around the actual image so face boxes (positioned as % of the stage) line
+   up with the video bounds and don't bleed into the letterbox margins. */
 .d2r-frame {
   position: relative;
   width: 100%;
   border-radius: 16px;
-  overflow: hidden;
-  background: #111;
+  background: #0d0d0d;
   border: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  min-height: 360px;
+  overflow: hidden;
 }
-.d2r-img { width: 100%; display: block; max-height: 420px; object-fit: contain; }
+.d2r-stage {
+  position: relative;
+  display: inline-block;
+  border-radius: 12px;
+  overflow: hidden;
+  max-height: 56vh;
+  box-shadow: 0 6px 28px rgba(0,0,0,0.5);
+}
+.d2r-img {
+  display: block;
+  max-height: 56vh;
+  max-width: 100%;
+  height: auto;
+  width: auto;
+}
 .d2r-fbox {
   position: absolute;
   border: 2px solid #f472b6;
   border-radius: 6px;
-  box-shadow: 0 0 12px rgba(244,114,182,0.3);
+  box-shadow: 0 0 0 1px rgba(244,114,182,0.25), 0 0 14px rgba(244,114,182,0.35);
 }
 .d2r-ftag {
   position: absolute;
-  top: -22px; left: 0;
+  top: -22px; left: -1px;
   background: #f472b6;
   color: #0a0a0a;
   font-size: 9px; font-weight: 700;
   padding: 2px 7px; border-radius: 4px;
   white-space: nowrap;
+  letter-spacing: 0.3px;
 }
 .d2r-badge {
   position: absolute;
-  bottom: 10px; right: 10px;
-  background: rgba(0,0,0,0.7);
+  top: 10px; right: 10px;
+  background: rgba(0,0,0,0.72);
   backdrop-filter: blur(6px);
-  border-radius: 20px;
-  padding: 4px 10px;
-  font-size: 10px; color: #f472b6; font-weight: 600;
-  display: flex; align-items: center; gap: 5px;
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 10px; color: #fff; font-weight: 600;
+  display: flex; align-items: center; gap: 6px;
+  z-index: 2;
 }
 .d2r-dot {
   width: 6px; height: 6px; border-radius: 50%;
-  background: #f472b6; animation: blink 1.2s ease infinite;
+  background: #4ade80; animation: blink 1.4s ease infinite;
 }
 
 /* Toggle */

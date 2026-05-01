@@ -1,33 +1,83 @@
 .s3 { padding: 24px 20px; max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
 
-/* Preview */
+/* Preview — sized to fit the video at its native aspect ratio so face boxes
+   line up with the actual video bounds (not letterboxed margins). */
 .f3-preview {
   width: 100%;
   border-radius: 14px;
-  overflow: hidden;
-  background: #111;
+  background: #0d0d0d;
   border: 1px solid rgba(255,255,255,0.06);
-  position: relative;
-  aspect-ratio: 16/7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  min-height: 320px;
+  max-height: 60vh;
 }
-.f3-prev-inner { width: 100%; height: 100%; position: relative; }
-.f3-prev-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.f3-prev-inner {
+  position: relative;
+  max-height: 100%;
+  max-width: 100%;
+  display: inline-block;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+.f3-prev-img {
+  display: block;
+  max-height: 56vh;
+  max-width: 100%;
+  height: auto;
+  width: auto;
+}
 .f3-prev-box {
   position: absolute;
-  border: 2px solid rgba(244,114,182,0.45);
-  border-radius: 5px;
+  border: 2px solid rgba(244,114,182,0.55);
+  border-radius: 6px;
   cursor: pointer;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
-.f3-prev-box.active { border-color: #f472b6; box-shadow: 0 0 10px rgba(244,114,182,0.3); }
+.f3-prev-box:hover { border-color: rgba(244,114,182,0.85); }
+.f3-prev-box.active { border-color: #f472b6; box-shadow: 0 0 0 1px #f472b6, 0 0 14px rgba(244,114,182,0.4); }
 .f3-prev-filter { width: 100%; height: 100%; object-fit: contain; opacity: 0.85; }
 .f3-prev-label {
   position: absolute; top: 10px; left: 10px;
-  background: rgba(0,0,0,0.65); backdrop-filter: blur(4px);
-  border-radius: 6px; padding: 3px 9px;
-  font-size: 9px; font-weight: 600; color: #f472b6; letter-spacing: 0.5px;
+  background: rgba(0,0,0,0.7); backdrop-filter: blur(6px);
+  border-radius: 999px; padding: 4px 10px;
+  font-size: 9px; font-weight: 600; color: #f472b6;
+  letter-spacing: 0.5px; text-transform: uppercase;
+  z-index: 2;
 }
-.f3-prev-empty { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 12px; color: #444; }
+.f3-prev-count {
+  position: absolute; top: 10px; right: 10px;
+  background: rgba(0,0,0,0.7); backdrop-filter: blur(6px);
+  border-radius: 999px; padding: 4px 10px;
+  font-size: 10px; font-weight: 600; color: #fff;
+  display: inline-flex; align-items: center; gap: 6px;
+  z-index: 2;
+}
+.f3-prev-count-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #4ade80;
+}
+.f3-prev-empty {
+  font-size: 12px; color: #444;
+}
+
+/* Face label tag inside the bounding box */
+.f3-prev-tag {
+  position: absolute;
+  top: -10px;
+  left: -1px;
+  background: #f472b6;
+  color: #0a0a0a;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
 
 /* Face selector bar */
 .f3-face-bar {
