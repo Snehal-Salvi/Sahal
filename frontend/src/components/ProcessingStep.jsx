@@ -8,7 +8,7 @@ export default function ProcessingStep({ icon, iconClass, name, desc, state }) {
       </div>
       {state === "done"   && <div className="ss-done">✓</div>}
       {state === "active" && <div className="ss-spin" />}
-      {state === "wait"   && <div className="ss-wait">Pending</div>}
+      {state === "wait"   && <div className="ss-wait">Next</div>}
     </div>
   );
 }

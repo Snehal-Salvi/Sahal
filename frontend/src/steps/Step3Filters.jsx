@@ -44,7 +44,6 @@ export default function Step3Filters({
 }) {
   const builtinFilters = filterLibrary.filter((f) => f.isBuiltIn);
   const characterFilters = builtinFilters.filter((f) => f.filterType === "character_mask");
-  const arFilters = builtinFilters.filter((f) => f.isAR && f.filterType !== "character_mask");
   const classicFilters = builtinFilters.filter((f) => !f.isAR);
   const customFilters = filterLibrary.filter((f) => !f.isBuiltIn);
 
@@ -132,23 +131,6 @@ export default function Step3Filters({
               </div>
               <div className="f3-grid">
                 {characterFilters.map((f) => (
-                  <FilterCard key={f.id} filter={f} isSelected={isSelected(f.id)} onSelect={assignFilter} onRemove={removeFilter} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {arFilters.length > 0 && (
-            <div className="f3-section">
-              <div className="f3-sec-hdr">
-                <span className="f3-sec-title">AR filters</span>
-                <span className="f3-sec-badge builtin">recommended</span>
-              </div>
-              <div className="f3-sec-copy">
-                Built for face tracking with real eyes and mouth kept live.
-              </div>
-              <div className="f3-grid">
-                {arFilters.map((f) => (
                   <FilterCard key={f.id} filter={f} isSelected={isSelected(f.id)} onSelect={assignFilter} onRemove={removeFilter} />
                 ))}
               </div>
