@@ -5,12 +5,15 @@ function FilterCard({ filter, isSelected, onSelect, onRemove }) {
     <div
       className={`f3-card${isSelected ? " on" : ""}`}
       onClick={() => onSelect(filter.id)}
+      title={filter.description || filter.name}
     >
       {isSelected && <div className="f3-check">✓</div>}
       <div className="f3-thumb">
         <img src={filter.previewUrl} alt={filter.name} />
       </div>
       <div className="f3-name">{filter.name.replace(/\.[^.]+$/, "")}</div>
+      {filter.filterType === "character_mask" && <div className="f3-char-pill">MASK</div>}
+      {filter.isAR && <div className="f3-ar-pill">AR</div>}
       {filter.isBuiltIn ? (
         <div className="f3-builtin">✦</div>
       ) : (
@@ -40,6 +43,9 @@ export default function Step3Filters({
   onAddFilter,
 }) {
   const builtinFilters = filterLibrary.filter((f) => f.isBuiltIn);
+  const characterFilters = builtinFilters.filter((f) => f.filterType === "character_mask");
+  const arFilters = builtinFilters.filter((f) => f.isAR && f.filterType !== "character_mask");
+  const classicFilters = builtinFilters.filter((f) => !f.isAR);
   const customFilters = filterLibrary.filter((f) => !f.isBuiltIn);
 
   function isSelected(filterId) {
@@ -54,146 +60,186 @@ export default function Step3Filters({
   const allAssigned = analysis?.faces?.every((f) => assignedFilters[f.faceId]);
 
   return (
-    <div className="s3">
-      {error && <div className="error-msg">{error}</div>}
+    <div className="s3-wrap">
+      {/* ── Left column: controls ── */}
+      <div className="s3-left">
+        {error && <div className="error-msg">{error}</div>}
 
-      {/* ── Preview ── */}
-      <div className="f3-preview">
-        {analysis?.representativeFrameDataUrl ? (
-          <div className="f3-prev-inner">
-            <img src={analysis.representativeFrameDataUrl} alt="Preview" className="f3-prev-img" />
-            {analysis.faces.map((face) => {
-              const box = face.representativeBox;
-              if (!box) return null;
-              const fFilter = filterLibrary.find((f) => f.id === assignedFilters[face.faceId]);
-              return (
+        {/* Face selector */}
+        {analysis?.faces?.length > 0 && (
+          <div className="f3-face-bar">
+            <div className="f3-face-tabs">
+              {analysis.faces.map((face) => {
+                const assigned = assignedFilters[face.faceId];
+                return (
+                  <button
+                    key={face.faceId}
+                    className={`f3-ftab${selectedFaceId === face.faceId ? " on" : ""}${assigned ? " done" : ""}`}
+                    onClick={() => setSelectedFaceId(face.faceId)}
+                  >
+                    <div className="f3-ftab-av">
+                      <img src={face.thumbnailDataUrl} alt={face.label} />
+                      {assigned && <div className="f3-ftab-ck">✓</div>}
+                    </div>
+                    <span>{face.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {analysis.faces.length > 1 && (
+              <div className="f3-same-tog">
+                <span>Same for all</span>
                 <div
-                  key={face.faceId}
-                  className={`f3-prev-box${selectedFaceId === face.faceId ? " active" : ""}`}
-                  style={{
-                    left: `${box.x * 100}%`,
-                    top: `${box.y * 100}%`,
-                    width: `${box.width * 100}%`,
-                    height: `${box.height * 100}%`,
-                  }}
-                  onClick={() => setSelectedFaceId(face.faceId)}
+                  className={`tog tog-sm${applySameFilterToAll ? " on" : ""}`}
+                  onClick={() => setApplySameFilterToAll((v) => !v)}
                 >
-                  {fFilter && (
-                    <img src={fFilter.previewUrl} alt="filter" className="f3-prev-filter" />
-                  )}
+                  <div className="knob" />
                 </div>
-              );
-            })}
-            <div className="f3-prev-label">Live Preview</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Active face info */}
+        {activeFace && (
+          <div className="f3-active-face">
+            <div className="f3-af-av">
+              <img src={activeFace.thumbnailDataUrl} alt={activeFace.label} />
+            </div>
+            <div className="f3-af-info">
+              <div className="f3-af-name">{activeFace.label}</div>
+              <div className="f3-af-filter">
+                {currentFilter
+                  ? currentFilter.name.replace(/\.[^.]+$/, "")
+                  : "No filter chosen yet"}
+              </div>
+            </div>
+            <div className="f3-af-badge">{applySameFilterToAll ? "All faces" : "Active"}</div>
+          </div>
+        )}
+
+        {/* Filter library */}
+        <div className="f3-lib">
+          {characterFilters.length > 0 && (
+            <div className="f3-section">
+              <div className="f3-sec-hdr">
+                <span className="f3-sec-title">Character masks</span>
+                <span className="f3-sec-badge builtin">animated</span>
+              </div>
+              <div className="f3-sec-copy">
+                Full face replacement with synthetic eyes and lips.
+              </div>
+              <div className="f3-grid">
+                {characterFilters.map((f) => (
+                  <FilterCard key={f.id} filter={f} isSelected={isSelected(f.id)} onSelect={assignFilter} onRemove={removeFilter} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {arFilters.length > 0 && (
+            <div className="f3-section">
+              <div className="f3-sec-hdr">
+                <span className="f3-sec-title">AR filters</span>
+                <span className="f3-sec-badge builtin">recommended</span>
+              </div>
+              <div className="f3-sec-copy">
+                Built for face tracking with real eyes and mouth kept live.
+              </div>
+              <div className="f3-grid">
+                {arFilters.map((f) => (
+                  <FilterCard key={f.id} filter={f} isSelected={isSelected(f.id)} onSelect={assignFilter} onRemove={removeFilter} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {classicFilters.length > 0 && (
+            <div className="f3-section">
+              <div className="f3-sec-hdr">
+                <span className="f3-sec-title">Classic filters</span>
+                <span className="f3-sec-badge">{classicFilters.length}</span>
+              </div>
+              <div className="f3-grid">
+                {classicFilters.map((f) => (
+                  <FilterCard key={f.id} filter={f} isSelected={isSelected(f.id)} onSelect={assignFilter} onRemove={removeFilter} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {customFilters.length > 0 && (
+            <div className="f3-section">
+              <div className="f3-sec-hdr">
+                <span className="f3-sec-title">Your uploads</span>
+                <span className="f3-sec-badge">{customFilters.length}</span>
+              </div>
+              <div className="f3-grid">
+                {customFilters.map((f) => (
+                  <FilterCard key={f.id} filter={f} isSelected={isSelected(f.id)} onSelect={assignFilter} onRemove={removeFilter} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {filterLibrary.length === 0 && (
+            <div className="f3-loading">Loading filters…</div>
+          )}
+
+          <button className="f3-upload" onClick={onAddFilter}>
+            <span className="f3-upload-plus">+</span>
+            <div>
+              <div className="f3-upload-title">Upload custom filter</div>
+              <div className="f3-upload-sub">Transparent PNG mask, advanced</div>
+            </div>
+          </button>
+        </div>
+
+        <button
+          className={`f3-process${allAssigned ? "" : " dim"}`}
+          onClick={handleProcessVideo}
+        >
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+          Process Video
+        </button>
+      </div>
+
+      {/* ── Right column: preview ── */}
+      <div className="s3-right">
+        {analysis?.representativeFrameDataUrl ? (
+          <div className="f3-preview">
+            <div className="f3-prev-inner">
+              <img src={analysis.representativeFrameDataUrl} alt="Preview" className="f3-prev-img" />
+              {analysis.faces.map((face) => {
+                const box = face.representativeBox;
+                if (!box) return null;
+                const fFilter = filterLibrary.find((f) => f.id === assignedFilters[face.faceId]);
+                return (
+                  <div
+                    key={face.faceId}
+                    className={`f3-prev-box${selectedFaceId === face.faceId ? " active" : ""}`}
+                    style={{
+                      left: `${box.x * 100}%`,
+                      top: `${box.y * 100}%`,
+                      width: `${box.width * 100}%`,
+                      height: `${box.height * 100}%`,
+                    }}
+                    onClick={() => setSelectedFaceId(face.faceId)}
+                  >
+                    {fFilter && (
+                      <img src={fFilter.previewUrl} alt="filter" className="f3-prev-filter" />
+                    )}
+                  </div>
+                );
+              })}
+              <div className="f3-prev-label">Live Preview</div>
+            </div>
           </div>
         ) : (
           <div className="f3-prev-empty">No preview available</div>
         )}
       </div>
-
-      {/* ── Face selector ── */}
-      <div className="f3-face-bar">
-        <div className="f3-face-tabs">
-          {analysis?.faces?.map((face) => {
-            const assigned = assignedFilters[face.faceId];
-            return (
-              <button
-                key={face.faceId}
-                className={`f3-ftab${selectedFaceId === face.faceId ? " on" : ""}${assigned ? " done" : ""}`}
-                onClick={() => setSelectedFaceId(face.faceId)}
-              >
-                <div className="f3-ftab-av">
-                  <img src={face.thumbnailDataUrl} alt={face.label} />
-                  {assigned && <div className="f3-ftab-ck">✓</div>}
-                </div>
-                <span>{face.label}</span>
-              </button>
-            );
-          })}
-        </div>
-
-        {analysis?.faces?.length > 1 && (
-          <div className="f3-same-tog">
-            <span>Same for all</span>
-            <div
-              className={`tog tog-sm${applySameFilterToAll ? " on" : ""}`}
-              onClick={() => setApplySameFilterToAll((v) => !v)}
-            >
-              <div className="knob" />
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ── Active face info ── */}
-      {activeFace && (
-        <div className="f3-active-face">
-          <div className="f3-af-av">
-            <img src={activeFace.thumbnailDataUrl} alt={activeFace.label} />
-          </div>
-          <div className="f3-af-info">
-            <div className="f3-af-name">{activeFace.label}</div>
-            <div className="f3-af-filter">
-              {currentFilter
-                ? currentFilter.name.replace(/\.[^.]+$/, "")
-                : "No filter chosen yet"}
-            </div>
-          </div>
-          <div className="f3-af-badge">{applySameFilterToAll ? "All faces" : "Active"}</div>
-        </div>
-      )}
-
-      {/* ── Filter library ── */}
-      <div className="f3-lib">
-        {builtinFilters.length > 0 && (
-          <div className="f3-section">
-            <div className="f3-sec-hdr">
-              <span className="f3-sec-title">Built-in filters</span>
-              <span className="f3-sec-badge builtin">✦ curated</span>
-            </div>
-            <div className="f3-grid">
-              {builtinFilters.map((f) => (
-                <FilterCard key={f.id} filter={f} isSelected={isSelected(f.id)} onSelect={assignFilter} onRemove={removeFilter} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {customFilters.length > 0 && (
-          <div className="f3-section">
-            <div className="f3-sec-hdr">
-              <span className="f3-sec-title">Your uploads</span>
-              <span className="f3-sec-badge">{customFilters.length}</span>
-            </div>
-            <div className="f3-grid">
-              {customFilters.map((f) => (
-                <FilterCard key={f.id} filter={f} isSelected={isSelected(f.id)} onSelect={assignFilter} onRemove={removeFilter} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {filterLibrary.length === 0 && (
-          <div className="f3-loading">Loading filters…</div>
-        )}
-
-        <button className="f3-upload" onClick={onAddFilter}>
-          <span className="f3-upload-plus">+</span>
-          <div>
-            <div className="f3-upload-title">Upload custom filter</div>
-            <div className="f3-upload-sub">Transparent PNG only</div>
-          </div>
-        </button>
-      </div>
-
-      {/* ── Process button ── */}
-      <button
-        className={`f3-process${allAssigned ? "" : " dim"}`}
-        onClick={handleProcessVideo}
-      >
-        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-        Process Video
-      </button>
     </div>
   );
 }

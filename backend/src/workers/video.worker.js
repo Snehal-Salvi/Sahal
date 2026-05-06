@@ -19,6 +19,17 @@ export function createVideoWorker() {
       video.error = undefined;
       await video.save();
 
+      // If the Cloudinary upload is still in flight, poll until the URL lands.
+      if (!video.originalUrl) {
+        for (let i = 0; i < 90; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const fresh = await Video.findById(videoId).select("originalUrl status");
+          if (fresh?.originalUrl) { video.originalUrl = fresh.originalUrl; break; }
+          if (fresh?.status === "failed") throw new Error("Video upload to Cloudinary failed");
+        }
+        if (!video.originalUrl) throw new Error("Timed out waiting for video upload");
+      }
+
       try {
         const processedBuffer = await processVideoWithAI({
           videoUrl: video.originalUrl,

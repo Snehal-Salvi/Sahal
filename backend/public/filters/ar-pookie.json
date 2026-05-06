@@ -1,0 +1,13 @@
+{
+  "title": "Pookie Bot",
+  "category": "AR filter",
+  "ar_ready": true,
+  "blend_mode": "over",
+  "reveal_eyes": true,
+  "reveal_mouth": true,
+  "strip_background": false,
+  "coverage": "accessory",
+  "filter_type": "accessory",
+  "character": "",
+  "description": "Pookie robot helmet, antenna and side pods only; the human face stays visible for blinks and speech."
+}

@@ -1,0 +1,13 @@
+{
+  "title": "Silver Star",
+  "category": "AR filter",
+  "ar_ready": true,
+  "blend_mode": "over",
+  "reveal_eyes": true,
+  "reveal_mouth": true,
+  "strip_background": false,
+  "coverage": "accessory",
+  "filter_type": "accessory",
+  "character": "",
+  "description": "Small glam stars and a chin sparkle line that track with the face."
+}

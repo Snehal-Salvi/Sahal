@@ -1,0 +1,13 @@
+{
+  "title": "Aurora Glow",
+  "category": "AR filter",
+  "ar_ready": true,
+  "blend_mode": "over",
+  "reveal_eyes": true,
+  "reveal_mouth": true,
+  "strip_background": false,
+  "coverage": "accessory",
+  "filter_type": "accessory",
+  "character": "",
+  "description": "Neon forehead halo and cheek accents that track the face without covering skin."
+}

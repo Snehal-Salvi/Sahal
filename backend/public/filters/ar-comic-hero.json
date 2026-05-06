@@ -1,0 +1,13 @@
+{
+  "title": "Comic Hero",
+  "category": "AR filter",
+  "ar_ready": true,
+  "blend_mode": "over",
+  "reveal_eyes": true,
+  "reveal_mouth": true,
+  "strip_background": false,
+  "coverage": "accessory",
+  "filter_type": "accessory",
+  "character": "",
+  "description": "Comic crown and cheek bolts that add character without replacing the face."
+}

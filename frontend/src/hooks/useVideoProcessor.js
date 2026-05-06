@@ -78,6 +78,14 @@ export function useVideoProcessor() {
           name: f.name,
           previewUrl: f.url,
           url: f.url,
+          category: f.category,
+          description: f.description,
+          isAR: f.isAR,
+          filterType: f.filterType,
+          character: f.character,
+          blendMode: f.blendMode,
+          revealEyes: f.revealEyes,
+          revealMouth: f.revealMouth,
           isBuiltIn: true,
         }));
         setFilterLibrary((cur) => {

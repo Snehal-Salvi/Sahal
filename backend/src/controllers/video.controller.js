@@ -186,28 +186,6 @@ export async function queueVideoProcessing(req, res) {
     });
   }
 
-  // Cloudinary upload may still be in flight (we returned the upload response
-  // before it finished). Wait for it here so the worker has originalUrl.
-  if (!video.originalUrl) {
-    const pending = pendingCloudinaryUploads.get(String(video._id));
-    if (pending) {
-      try {
-        await pending;
-      } catch (err) {
-        return res.status(500).json({ message: `Upload failed: ${err.message}` });
-      }
-      // Refresh from DB to pick up originalUrl set by the upload finalizer
-      const refreshed = await Video.findById(videoId);
-      if (refreshed) {
-        video.originalUrl = refreshed.originalUrl;
-        video.originalPublicId = refreshed.originalPublicId;
-      }
-    }
-    if (!video.originalUrl) {
-      return res.status(409).json({ message: "Video upload has not completed yet" });
-    }
-  }
-
   const knownFaceIds = new Set(video.detectedFaces.map((face) => face.faceId));
   const normalizedAssignments = filterAssignments.map((assignment) => ({
     faceId: assignment?.faceId,

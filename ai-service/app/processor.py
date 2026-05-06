@@ -74,6 +74,14 @@ class CartoonStyle:
     texture: np.ndarray
     filter_landmarks: Optional[np.ndarray] = None   # (468, 2) face pts in filter PNG
     filter_triangles: Optional[List[Tuple[int, int, int]]] = None  # Delaunay on above
+    blend_mode: str = "over"    # "over" (alpha), "multiply" (face paint), "overlay" (tint)
+    reveal_eyes: bool = False   # True = real eyes show through; False = filter's drawn eyes deform with blinks
+    reveal_mouth: bool = False  # True = real mouth shows through; False = filter's drawn mouth deforms with lip motion
+    filter_type: str = "accessory"  # "accessory"|"face_paint"|"character_mask"
+    character: str = ""
+    warp_preset: str = ""       # named warp footprint, e.g. "porcelain_cup" — overrides defaults
+    feature_regions: Optional[Dict[str, Tuple[int, int, int, int]]] = None  # cup-pixel bboxes for live expression deformation
+    mouth_triangles: Optional[List[Tuple[int, int, int]]] = None  # Delaunay triangles over mouth landmarks for focused lip-warp
 
 
 @dataclass
@@ -433,6 +441,36 @@ def remove_white_background(rgba: np.ndarray, lo_diff: int = 18) -> np.ndarray:
     return out
 
 
+def _landmarks_look_plausible(points: np.ndarray, img_shape: Tuple[int, int]) -> bool:
+    """Reject MediaPipe detections in stylized cartoon art that produce
+    implausible landmark layouts (e.g. tiny eye span, eyes below mouth).
+
+    Without this, highly abstract filters (Doraemon-style) yield bad source
+    landmarks and the mesh warp produces grotesque output.
+    """
+    h, w = img_shape[:2]
+    diag = max(float(np.hypot(w, h)), 1.0)
+
+    # 33 = left eye outer, 263 = right eye outer; should span a meaningful chunk of the image
+    eye_span = float(np.linalg.norm(points[263] - points[33]))
+    if eye_span / diag < 0.08:
+        return False
+
+    # Mouth (13/14) must be below the eyes — protects against rotated/garbage detections
+    eye_y = float((points[33][1] + points[263][1]) * 0.5)
+    mouth_y = float((points[13][1] + points[14][1]) * 0.5)
+    if mouth_y <= eye_y:
+        return False
+
+    # Face oval bbox should fill at least 25% of the image's smaller dimension
+    oval = points[FACE_OVAL]
+    face_h = float(oval[:, 1].max() - oval[:, 1].min())
+    if face_h / max(min(h, w), 1) < 0.25:
+        return False
+
+    return True
+
+
 def detect_face_in_filter(bgra: np.ndarray) -> Optional[np.ndarray]:
     """Run MediaPipe Face Mesh on the filter PNG and return (468, 2) pixel coords if a
     face is detected, else None. Tries multiple preprocessing variants to handle
@@ -491,19 +529,387 @@ def compute_delaunay_triangles(
     return triangles
 
 
-def build_style_from_overlay(overlay_rgba: np.ndarray) -> CartoonStyle:
+def build_style_from_overlay(
+    overlay_rgba: np.ndarray,
+    manifest: Optional[Dict[str, object]] = None,
+) -> CartoonStyle:
+    """Build a CartoonStyle from a PNG and an optional sidecar manifest.
+
+    Manifest schema (all fields optional):
+      {
+        "landmarks": [[x, y], ...]       // 468 canonical-UV landmarks in PNG pixels
+        "blend_mode": "over"|"multiply"|"overlay",
+        "reveal_eyes": bool,
+        "reveal_mouth": bool,
+        "strip_background": bool          // skip white-background flood-fill
+        "filter_type": "accessory"|"face_paint"|"character_mask",
+        "character": "porcelain_cup"
+      }
+
+    Manifest landmarks override MediaPipe detection — required for stylized
+    artwork where MediaPipe can't find a face (face paint, abstract masks).
+    """
+    manifest = manifest or {}
     texture = overlay_rgba.copy()
-    # If every pixel is fully opaque the PNG has no real transparency → strip background
-    if int(texture[:, :, 3].min()) == 255:
+
+    strip_bg = manifest.get("strip_background")
+    if strip_bg is None:
+        strip_bg = int(texture[:, :, 3].min()) == 255  # no real alpha → strip
+    if strip_bg:
         texture = remove_white_background(texture)
 
-    # Try to detect a face in the filter PNG for expression-synced mesh warp
-    filter_lm = detect_face_in_filter(texture)
-    filter_tri = None
-    if filter_lm is not None:
-        filter_tri = compute_delaunay_triangles(filter_lm, texture.shape)
+    manifest_lm = manifest.get("landmarks")
+    if manifest_lm is not None:
+        filter_lm = np.asarray(manifest_lm, dtype=np.float32)
+        if filter_lm.ndim != 2 or filter_lm.shape[1] != 2 or filter_lm.shape[0] not in (468, 478):
+            raise ValueError(
+                f"Filter manifest landmarks must be shape (468, 2) or (478, 2), got {filter_lm.shape}"
+            )
+    else:
+        filter_lm = detect_face_in_filter(texture)
 
-    return CartoonStyle(texture=texture, filter_landmarks=filter_lm, filter_triangles=filter_tri)
+    filter_tri = (
+        compute_delaunay_triangles(filter_lm, texture.shape)
+        if filter_lm is not None
+        else None
+    )
+
+    blend_mode = str(manifest.get("blend_mode", "over"))
+    if blend_mode not in {"over", "multiply", "overlay"}:
+        blend_mode = "over"
+
+    feature_regions = (
+        _compute_feature_regions(filter_lm, texture.shape)
+        if filter_lm is not None
+        else None
+    )
+    mouth_tri = (
+        _compute_mouth_triangles(filter_lm, texture.shape)
+        if filter_lm is not None
+        else None
+    )
+
+    return CartoonStyle(
+        texture=texture,
+        filter_landmarks=filter_lm,
+        filter_triangles=filter_tri,
+        blend_mode=blend_mode,
+        reveal_eyes=bool(manifest.get("reveal_eyes", True)),
+        reveal_mouth=bool(manifest.get("reveal_mouth", True)),
+        filter_type=str(manifest.get("filter_type", manifest.get("coverage", "accessory"))),
+        character=str(manifest.get("character", "")),
+        warp_preset=str(manifest.get("warp_preset", "")),
+        feature_regions=feature_regions,
+        mouth_triangles=mouth_tri,
+    )
+
+
+def _compute_mouth_triangles(
+    landmarks: np.ndarray,
+    shape: Tuple[int, int],
+) -> List[Tuple[int, int, int]]:
+    """Delaunay triangulation restricted to mouth landmarks (outer + inner
+    lip ring). Triangles index into the FULL 478-landmark array. Computed
+    once per style; used per frame to mesh-warp the painted lips when the
+    user talks."""
+    mouth_indices = sorted(set(MOUTH_OUTER + MOUTH_INNER))
+    sub_pts = landmarks[mouth_indices]
+    sub_tri = compute_delaunay_triangles(sub_pts, shape)
+    return [(mouth_indices[i], mouth_indices[j], mouth_indices[k]) for i, j, k in sub_tri]
+
+
+def _bbox_from_indices(
+    landmarks: np.ndarray,
+    indices: List[int],
+    pad_x: float,
+    pad_y: float,
+    shape: Tuple[int, int],
+) -> Tuple[int, int, int, int]:
+    """Axis-aligned bbox around landmarks[indices] expanded by (pad_x, pad_y)
+    fractions of the bbox's own width/height, clipped to image bounds."""
+    pts = landmarks[indices]
+    x_min = float(pts[:, 0].min())
+    y_min = float(pts[:, 1].min())
+    x_max = float(pts[:, 0].max())
+    y_max = float(pts[:, 1].max())
+    w = x_max - x_min
+    h = y_max - y_min
+    img_h, img_w = shape[:2]
+    x = int(max(0, x_min - pad_x * w))
+    y = int(max(0, y_min - pad_y * h))
+    x2 = int(min(img_w, x_max + pad_x * w))
+    y2 = int(min(img_h, y_max + pad_y * h))
+    return x, y, max(1, x2 - x), max(1, y2 - y)
+
+
+# Eye opening only — no eyebrow landmarks. Used for local-deformation bbox so
+# the squash region is tight on the eye plus a margin for lashes, not the whole
+# brow-to-cheekbone range that LEFT_EYE_FULL covers.
+_LEFT_EYE_OPENING = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+_RIGHT_EYE_OPENING = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
+
+
+def _compute_feature_regions(
+    landmarks: np.ndarray,
+    shape: Tuple[int, int],
+) -> Dict[str, Tuple[int, int, int, int]]:
+    """Bounding boxes (x, y, w, h) for left eye, right eye and mouth on a
+    character-mask texture. The vertical padding catches dramatic lashes
+    that extend beyond MediaPipe's eye landmarks; horizontal padding stays
+    small so the squash doesn't smear into the cup's cheek shading."""
+    return {
+        "left_eye": _bbox_from_indices(landmarks, _LEFT_EYE_OPENING, pad_x=0.10, pad_y=0.7, shape=shape),
+        "right_eye": _bbox_from_indices(landmarks, _RIGHT_EYE_OPENING, pad_x=0.10, pad_y=0.7, shape=shape),
+        "mouth": _bbox_from_indices(landmarks, MOUTH_OUTER + MOUTH_INNER, pad_x=0.08, pad_y=0.20, shape=shape),
+    }
+
+
+def _squash_region_v(texture: np.ndarray, bbox: Tuple[int, int, int, int], scale: float) -> None:
+    """Vertically compress the region toward its horizontal centerline, in
+    place. The freed space (top + bottom of bbox) is filled with a vertical
+    gradient sampled from the rows immediately above and below the bbox —
+    that's the cup's 'skin' color, so the closed eye reads as a flat lid.
+    """
+    x, y, w, h = bbox
+    if w < 2 or h < 4 or scale >= 0.99:
+        return
+    img_h, _ = texture.shape[:2]
+
+    above_y0 = max(0, y - 6)
+    below_y1 = min(img_h, y + h + 6)
+    skin_above = (
+        texture[above_y0:y, x:x + w].mean(axis=0).astype(np.uint8)
+        if y > above_y0 else None
+    )
+    skin_below = (
+        texture[y + h:below_y1, x:x + w].mean(axis=0).astype(np.uint8)
+        if below_y1 > y + h else None
+    )
+    if skin_above is None and skin_below is None:
+        return
+    if skin_above is None:
+        skin_above = skin_below
+    if skin_below is None:
+        skin_below = skin_above
+
+    patch = texture[y:y + h, x:x + w].copy()
+    new_h = max(2, int(h * scale))
+    scaled = cv2.resize(patch, (w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    weights = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None, None]
+    fill = (
+        skin_above.astype(np.float32)[None, :, :] * (1.0 - weights)
+        + skin_below.astype(np.float32)[None, :, :] * weights
+    ).astype(np.uint8)
+    texture[y:y + h, x:x + w] = fill
+
+    offset_y = y + (h - new_h) // 2
+    if scaled.shape[2] == 4:
+        src_a = scaled[:, :, 3:4].astype(np.float32) / 255.0
+        dst = texture[offset_y:offset_y + new_h, x:x + w].astype(np.float32)
+        blended = scaled.astype(np.float32) * src_a + dst * (1.0 - src_a)
+        texture[offset_y:offset_y + new_h, x:x + w] = blended.clip(0, 255).astype(np.uint8)
+    else:
+        texture[offset_y:offset_y + new_h, x:x + w] = scaled
+
+
+# Lip landmarks split into inner ring vs outer ring vs anchored corners.
+# Per-landmark separation is then tapered horizontally so corners barely
+# move and centre points move fully — eliminates the "wings" artefact at
+# the mouth corners that uniform separation produces.
+_LIP_INNER = {13, 312, 311, 310, 415, 82, 81, 80, 191,
+              14, 317, 402, 318, 324, 87, 178, 88, 95}
+_LIP_OUTER = {0, 267, 269, 270, 409, 37, 39, 40, 185,
+              17, 314, 405, 321, 375, 84, 181, 91, 146}
+_LIP_CORNERS = {61, 291, 78, 308}  # always anchored
+
+
+def _animate_lips(
+    texture: np.ndarray,
+    src_landmarks: np.ndarray,
+    triangles: List[Tuple[int, int, int]],
+    mouth_open: float,
+) -> None:
+    """Mesh-warp the cup's painted lips so they physically part vertically
+    by mouth_open. Each lip landmark's vertical movement is weighted by:
+      • inner ring (0.32× height) vs outer ring (0.10× height) — outer
+        lipstick rolls less than inner edge.
+      • horizontal proximity to mouth midline — center of lip moves
+        fully, corner-adjacent points fade to zero. Eliminates the
+        wing-shaped warp artefact at the corners.
+
+    Mutates `texture` in place by compositing the warped lip triangles
+    over the original lipstick pixels."""
+    if mouth_open < 0.03 or not triangles:
+        return
+
+    mid_x = float((src_landmarks[61, 0] + src_landmarks[291, 0]) * 0.5)
+    mid_y = float((src_landmarks[0, 1] + src_landmarks[17, 1]) * 0.5)
+    mouth_w = max(float(abs(src_landmarks[291, 0] - src_landmarks[61, 0])), 4.0)
+    mouth_h = max(float(abs(src_landmarks[17, 1] - src_landmarks[0, 1])), 4.0)
+
+    # Aggressive separation so talking-range coefficients (0.10-0.35) produce
+    # visibly parted lips on the rendered cup. At mouth_open=1.0 each lip
+    # moves 55% of mouth height — total gap ≈ full mouth height (a real wide
+    # open mouth). Linear in mouth_open, so subtle talk = subtle parting.
+    inner_max = mouth_open * mouth_h * 0.55
+    outer_max = mouth_open * mouth_h * 0.18
+
+    dst = src_landmarks.copy()
+    half_w = mouth_w * 0.5
+    for idx in _LIP_INNER | _LIP_OUTER:
+        # Horizontal taper: 1.0 at midline, 0.0 at corners. Pow 1.6 keeps
+        # taper gentle near the centre and steep near corners.
+        h_norm = clamp(abs(float(src_landmarks[idx, 0]) - mid_x) / half_w, 0.0, 1.0)
+        h_weight = (1.0 - h_norm) ** 1.6
+        scale = inner_max if idx in _LIP_INNER else outer_max
+        sign = -1.0 if float(src_landmarks[idx, 1]) < mid_y else 1.0
+        dst[idx, 1] = float(src_landmarks[idx, 1]) + sign * scale * h_weight
+
+    h, w = texture.shape[:2]
+    canvas = np.zeros_like(texture)
+
+    for i, j, k in triangles:
+        src_tri = np.float32([src_landmarks[i], src_landmarks[j], src_landmarks[k]])
+        dst_tri = np.float32([dst[i], dst[j], dst[k]])
+        sr = cv2.boundingRect(src_tri)
+        dr = cv2.boundingRect(dst_tri)
+        if sr[2] <= 0 or sr[3] <= 0 or dr[2] <= 0 or dr[3] <= 0:
+            continue
+
+        sx, sy, sw, sh = sr
+        dx, dy, dw, dh = dr
+        if dx + dw <= 0 or dy + dh <= 0 or dx >= w or dy >= h:
+            continue
+
+        crop = texture[sy:sy + sh, sx:sx + sw]
+        if crop.size == 0:
+            continue
+
+        M = cv2.getAffineTransform(
+            src_tri - np.float32([sx, sy]),
+            dst_tri - np.float32([dx, dy]),
+        )
+        warped_patch = cv2.warpAffine(
+            crop, M, (dw, dh),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0, 0),
+        )
+
+        tri_mask = np.zeros((dh, dw), dtype=np.uint8)
+        cv2.fillConvexPoly(
+            tri_mask,
+            np.int32(np.round(dst_tri - np.float32([dx, dy]))),
+            255, lineType=cv2.LINE_AA,
+        )
+        warped_patch[:, :, 3] = cv2.bitwise_and(warped_patch[:, :, 3], tri_mask)
+
+        cx1, cy1 = max(0, dx), max(0, dy)
+        cx2, cy2 = min(w, dx + dw), min(h, dy + dh)
+        px1, py1 = cx1 - dx, cy1 - dy
+        px2, py2 = px1 + (cx2 - cx1), py1 + (cy2 - cy1)
+        if cx2 <= cx1 or cy2 <= cy1:
+            continue
+
+        _composite_over(canvas, warped_patch, cy1, cy2, cx1, cx2, py1, py2, px1, px2)
+
+    src_a = canvas[:, :, 3:4].astype(np.float32) / 255.0
+    out = canvas.astype(np.float32) * src_a + texture.astype(np.float32) * (1.0 - src_a)
+    np.copyto(texture, out.clip(0, 255).astype(np.uint8))
+
+
+def _open_mouth_overlay(
+    texture: np.ndarray,
+    landmarks: np.ndarray,
+    mouth_open: float,
+) -> None:
+    """Composite a small dark-red lip interior at the seam between upper and
+    lower painted lips, sized + faded by mouth_open.
+
+    Smoothstep on intensity (no hard threshold) means MediaPipe coefficient
+    jitter just modulates opacity smoothly instead of flickering the overlay
+    on and off frame-by-frame. Mutates `texture` in place."""
+    seam_x = float((landmarks[13][0] + landmarks[14][0]) * 0.5)
+    seam_y = float((landmarks[13][1] + landmarks[14][1]) * 0.5)
+    mouth_w = float(abs(landmarks[291][0] - landmarks[61][0]))
+    if mouth_w < 4:
+        return
+
+    # Smoothstep ramp tuned wider so even peak talking coefficients (~0.30)
+    # produce moderate intensity, not full saturation. Mesh-warp does most of
+    # the visible movement; this overlay just darkens the gap.
+    raw_t = clamp((mouth_open - 0.05) / 0.50, 0.0, 1.0)
+    intensity = raw_t * raw_t * (3.0 - 2.0 * raw_t)
+    if intensity < 0.04:
+        return
+
+    # Size matches the mesh-warp gap so the dark interior fills the parting,
+    # not bleeds outside it. Keep roughly 80% of the warp gap to stay safely
+    # behind the lipstick edges.
+    mouth_h = float(abs(landmarks[17][1] - landmarks[0][1])) or mouth_w * 0.4
+    open_w = mouth_w * (0.20 + intensity * 0.18)
+    open_h = mouth_h * (0.05 + intensity * 0.85) * 0.55
+
+    layer = np.zeros_like(texture)
+    # Dark mouth-interior brown-red (BGR) — warm, never bluish.
+    # R=58 G=18 B=22 reads as the dark space behind teeth.
+    cv2.ellipse(
+        layer, (int(seam_x), int(seam_y)),
+        (max(2, int(open_w)), max(2, int(open_h))),
+        0, 0, 360, (22, 18, 58, int(215 * intensity)), -1, lineType=cv2.LINE_AA,
+    )
+    layer[:, :, 3] = cv2.GaussianBlur(layer[:, :, 3], (0, 0), sigmaX=3.0)
+
+    # Teeth glint only when the user is genuinely wide — quietly fades in
+    # over the top 25% of the intensity range.
+    if intensity > 0.75:
+        teeth_h = max(2, int(open_h * 0.30))
+        teeth_w = max(2, int(open_w * 0.62))
+        cv2.ellipse(
+            layer, (int(seam_x), int(seam_y - open_h * 0.40)),
+            (teeth_w, teeth_h), 0, 0, 180,
+            (210, 200, 184, int(180 * (intensity - 0.75) / 0.25)), -1, lineType=cv2.LINE_AA,
+        )
+
+    src_a = layer[:, :, 3:4].astype(np.float32) / 255.0
+    dst = texture.astype(np.float32)
+    out = layer.astype(np.float32) * src_a + dst * (1.0 - src_a)
+    np.copyto(texture, out.clip(0, 255).astype(np.uint8))
+
+
+def _apply_local_expressions(
+    texture: np.ndarray,
+    regions: Dict[str, Tuple[int, int, int, int]],
+    coefficients: Dict[str, float],
+    landmarks: Optional[np.ndarray] = None,
+    mouth_triangles: Optional[List[Tuple[int, int, int]]] = None,
+) -> np.ndarray:
+    """Per-frame deformation of a static character-mask texture so that the
+    drawn eyes blink and the drawn mouth opens with the user's expression.
+    Operates on a copy so the cached style.texture stays clean."""
+    out = texture.copy()
+    blink_left = clamp(coefficients.get("blink_left", 0.0), 0.0, 1.0)
+    blink_right = clamp(coefficients.get("blink_right", 0.0), 0.0, 1.0)
+    mouth_open = clamp(coefficients.get("mouth_open", 0.0), 0.0, 1.0)
+
+    # Smoothstep ramp on blink: 0 below 0.30 (jitter floor at small face sizes),
+    # 1.0 at 0.85. Hermite curve eliminates frame-to-frame on/off pop, and the
+    # high low-bound prevents phantom blinks from MediaPipe noise on distant
+    # faces — the user explicitly reported the cup blinking on its own.
+    def smoothstep(c: float, lo: float, hi: float) -> float:
+        t = clamp((c - lo) / max(hi - lo, EPSILON), 0.0, 1.0)
+        return t * t * (3.0 - 2.0 * t)
+
+    bl_int = smoothstep(blink_left, 0.30, 0.85)
+    br_int = smoothstep(blink_right, 0.30, 0.85)
+
+    if bl_int > 0.05 and "left_eye" in regions:
+        _squash_region_v(out, regions["left_eye"], 1.0 - bl_int * 0.65)
+    if br_int > 0.05 and "right_eye" in regions:
+        _squash_region_v(out, regions["right_eye"], 1.0 - br_int * 0.65)
+
+    return out
 
 
 def extract_expression_coefficients(points: np.ndarray, tuning: ExpressionTuning) -> Dict[str, float]:
@@ -559,10 +965,24 @@ def _composite_over(canvas: np.ndarray, patch: np.ndarray,
     canvas[cy1:cy2, cx1:cx2, 3] = (oa * 255).clip(0, 255).astype(np.uint8).reshape(cy2 - cy1, cx2 - cx1)
 
 
+def _blend_pixels(dst_bgr: np.ndarray, src_bgr: np.ndarray, mode: str) -> np.ndarray:
+    """Pixel-wise blend of src over/with dst. All inputs are float32 in [0, 255]."""
+    if mode == "multiply":
+        return dst_bgr * src_bgr / 255.0
+    if mode == "overlay":
+        d = dst_bgr / 255.0
+        s = src_bgr / 255.0
+        low = 2.0 * d * s
+        high = 1.0 - 2.0 * (1.0 - d) * (1.0 - s)
+        return np.where(d < 0.5, low, high) * 255.0
+    return src_bgr  # "over"
+
+
 def _composite_filter(
     frame: np.ndarray,
     warped_canvas: np.ndarray,
     face_points: np.ndarray,
+    blend_mode: str = "over",
 ) -> np.ndarray:
     """Composite warped filter onto frame with a soft feathered boundary and
     luminance matching so the filter looks lit by the same light as the face.
@@ -615,7 +1035,8 @@ def _composite_filter(
     s3 = soft[:, :, np.newaxis]
     blend_alpha = f3 * (s3 * inside + (1.0 - inside))
 
-    return ((1.0 - blend_alpha) * dst + blend_alpha * src_bgr).clip(0, 255).astype(np.uint8)
+    blended_src = _blend_pixels(dst, src_bgr, blend_mode)
+    return ((1.0 - blend_alpha) * dst + blend_alpha * blended_src).clip(0, 255).astype(np.uint8)
 
 
 def _warp_mesh(frame: np.ndarray,
@@ -680,6 +1101,10 @@ def _warp_perspective_to_canvas(
     frame_shape: Tuple[int, int, int],
     texture: np.ndarray,
     points: np.ndarray,
+    top_scale: float = 0.42,
+    bottom_scale: float = 0.12,
+    side_scale_top: float = 0.72,
+    side_scale_bottom: float = 0.65,
 ) -> np.ndarray:
     """Perspective-warp the filter texture to align with the live face.
 
@@ -700,14 +1125,13 @@ def _warp_perspective_to_canvas(
     right = (points[454] - points[234]) / face_w
     down  = (points[152] - points[10])  / face_h
 
-    # 42 % above forehead (room for hair/hat), 12 % below chin, 72 % each side
-    top_mid    = points[10]  - down  * face_h * 0.42
-    bottom_mid = points[152] + down  * face_h * 0.12
+    top_mid    = points[10]  - down  * face_h * top_scale
+    bottom_mid = points[152] + down  * face_h * bottom_scale
 
-    tl = top_mid    - right * face_w * 0.72
-    tr = top_mid    + right * face_w * 0.72
-    br = bottom_mid + right * face_w * 0.65
-    bl = bottom_mid - right * face_w * 0.65
+    tl = top_mid    - right * face_w * side_scale_top
+    tr = top_mid    + right * face_w * side_scale_top
+    br = bottom_mid + right * face_w * side_scale_bottom
+    bl = bottom_mid - right * face_w * side_scale_bottom
 
     M = cv2.getPerspectiveTransform(
         np.float32([[0, 0], [tw - 1, 0], [tw - 1, th - 1], [0, th - 1]]),
@@ -725,6 +1149,8 @@ def _apply_expression_transparency(
     canvas: np.ndarray,
     dst: np.ndarray,
     coefficients: Dict[str, float],
+    reveal_eyes: bool = True,
+    reveal_mouth: bool = True,
 ) -> np.ndarray:
     """Banuba-style mask: eyes and mouth are always transparent so the real face
     shows through and naturally syncs with every blink and lip movement.
@@ -743,15 +1169,368 @@ def _apply_expression_transparency(
         soft = cv2.GaussianBlur(region.astype(np.float32), (0, 0), sigmaX=sigma) / 255.0
         np.multiply(alpha, 1.0 - soft * strength, out=alpha)
 
-    # Always reveal real eyes + brows so blinks are live
-    fade_region(LEFT_EYE_FULL, 1.0, sigma=9.0)
-    fade_region(RIGHT_EYE_FULL, 1.0, sigma=9.0)
+    if reveal_eyes:
+        fade_region(LEFT_EYE_FULL, 1.0, sigma=9.0)
+        fade_region(RIGHT_EYE_FULL, 1.0, sigma=9.0)
 
-    # Always reveal real mouth so lip movement is live
-    fade_region(MOUTH_OUTER + MOUTH_INNER, 1.0, sigma=10.0)
+    if reveal_mouth:
+        fade_region(MOUTH_OUTER + MOUTH_INNER, 1.0, sigma=10.0)
 
     result[:, :, 3] = alpha.clip(0, 255).astype(np.uint8)
     return result
+
+
+def _alpha_composite_bgra(frame: np.ndarray, canvas: np.ndarray) -> np.ndarray:
+    """Composite a BGRA canvas over a BGR frame."""
+    alpha = canvas[:, :, 3:4].astype(np.float32) / 255.0
+    src = canvas[:, :, :3].astype(np.float32)
+    dst = frame.astype(np.float32)
+    return ((1.0 - alpha) * dst + alpha * src).clip(0, 255).astype(np.uint8)
+
+
+def _draw_polyline_alpha(img: np.ndarray, pts: Sequence[Tuple[int, int]], color: Tuple[int, int, int, int], thickness: int) -> None:
+    cv2.polylines(img, [np.array(pts, dtype=np.int32)], False, color, thickness, lineType=cv2.LINE_AA)
+
+
+def _porcelain_cup_texture(
+    coefficients: Optional[Dict[str, float]] = None,
+    size: int = 768,
+) -> np.ndarray:
+    """Cup-face character mask: porcelain bowl with sculpted shading,
+    dramatic curled lashes, amber irises and glossy lipstick.
+
+    Designed to read as a 3D AR lens. Feature Y coords are tuned for the
+    character_mask perspective warp (top_scale=0.36, bottom_scale=0.16) so
+    eyes / mouth land where the real face's eyes / mouth would be.
+    """
+    coefficients = coefficients or {}
+    tex = np.zeros((size, size, 4), dtype=np.uint8)
+
+    def bgr(hex_color: str, alpha: int = 255) -> Tuple[int, int, int, int]:
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return (b, g, r, alpha)
+
+    def soft_blob(color: Tuple[int, int, int, int], paint_mask, blur_sigma: float) -> None:
+        """Composite a blurred-edge color blob onto tex without dragging black
+        from the empty canvas into the blurred region."""
+        layer = np.zeros_like(tex)
+        layer[:, :, 0] = color[0]
+        layer[:, :, 1] = color[1]
+        layer[:, :, 2] = color[2]
+        mask = np.zeros((size, size), dtype=np.uint8)
+        paint_mask(mask)
+        blurred = cv2.GaussianBlur(mask, (0, 0), sigmaX=blur_sigma)
+        layer[:, :, 3] = (blurred.astype(np.float32) * (color[3] / 255.0)).clip(0, 255).astype(np.uint8)
+        _composite_over(tex, layer, 0, size, 0, size, 0, size, 0, size)
+
+    blink = clamp((coefficients.get("blink_left", 0.0) + coefficients.get("blink_right", 0.0)) * 0.5, 0.0, 1.0)
+    smile = clamp(coefficients.get("smile", 0.0), 0.0, 1.0)
+    mouth_open = clamp(coefficients.get("mouth_open", 0.0), 0.0, 1.0)
+    yaw = coefficients.get("yaw", 0.5) - 0.5
+
+    # ─── Cup body ─────────────────────────────────────────────────────────
+    porcelain = bgr("#fdf3e2")
+    rim_white = bgr("#ffffff")
+    rim_edge = bgr("#d8c4b0", 230)
+
+    # Smooth bowl silhouette — sampled from an ellipse so there are no
+    # straight bottom edges that betray the shape as 2D.
+    bowl_pts = [(62, 256), (706, 256), (706, 490)]
+    for theta_deg in range(360, 179, -2):  # bottom semicircle right→bottom→left
+        theta = math.radians(theta_deg)
+        bowl_pts.append((int(384 + math.cos(theta) * 322), int(490 + math.sin(theta) * 250)))
+    bowl_pts.append((62, 490))
+    bowl = np.array(bowl_pts, dtype=np.int32)
+    cv2.fillPoly(tex, [bowl], porcelain, lineType=cv2.LINE_AA)
+
+    # Right-side body shadow (light source upper-left)
+    soft_blob(
+        bgr("#7c6450", 150),
+        lambda m: cv2.ellipse(m, (568, 504), (220, 280), 0, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        blur_sigma=46,
+    )
+    # Bottom shadow band
+    soft_blob(
+        bgr("#7a6452", 180),
+        lambda m: cv2.ellipse(m, (384, 700), (260, 60), 0, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        blur_sigma=24,
+    )
+    # Upper-left highlight
+    soft_blob(
+        bgr("#ffffff", 170),
+        lambda m: cv2.ellipse(m, (210, 372), (90, 220), -22, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        blur_sigma=36,
+    )
+    # Subtle full-body warmth pass
+    soft_blob(
+        bgr("#fff5e6", 70),
+        lambda m: cv2.ellipse(m, (384, 470), (300, 270), 0, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        blur_sigma=30,
+    )
+
+    # Top rim (front of cup)
+    cv2.ellipse(tex, (384, 256), (322, 54), 0, 0, 360, rim_white, -1, lineType=cv2.LINE_AA)
+    cv2.ellipse(tex, (384, 256), (322, 54), 0, 0, 360, rim_edge, 5, lineType=cv2.LINE_AA)
+    # Inner rim depth shadow
+    cv2.ellipse(tex, (384, 264), (304, 30), 0, 180, 360, bgr("#dcc6ad", 200), -1, lineType=cv2.LINE_AA)
+    # Bright rim highlight stripe
+    cv2.ellipse(tex, (384, 240), (260, 8), 0, 180, 360, bgr("#ffffff", 220), -1, lineType=cv2.LINE_AA)
+
+    # Handle on left
+    cv2.ellipse(tex, (90, 480), (78, 132), 0, 60, 300, porcelain, 32, lineType=cv2.LINE_AA)
+    cv2.ellipse(tex, (90, 480), (78, 132), 0, 60, 300, rim_edge, 5, lineType=cv2.LINE_AA)
+    cv2.ellipse(tex, (90, 480), (52, 102), 0, 60, 300, bgr("#c9b39c", 220), 4, lineType=cv2.LINE_AA)
+    soft_blob(  # handle inner highlight
+        bgr("#ffffff", 110),
+        lambda m: cv2.ellipse(m, (60, 440), (24, 50), 10, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        blur_sigma=8,
+    )
+
+    # Cheek blush
+    soft_blob(
+        bgr("#ff7a8e", 110),
+        lambda m: (
+            cv2.ellipse(m, (228, 510), (78, 50), -8, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+            cv2.ellipse(m, (540, 510), (78, 50), 8, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        ),
+        blur_sigma=22,
+    )
+
+    # ─── Eyebrows (sit just above the eyes at y=410) ───────────────────────
+    def draw_brow(cx: int, side: int) -> None:
+        base_y = 358
+        for w, alpha, drop in [(11, 200, 0), (8, 230, 1), (5, 250, 2)]:
+            pts = np.array([
+                [cx - 72 * side, base_y + 4 + drop],
+                [cx - 30 * side, base_y - 12 + drop],
+                [cx + 12 * side, base_y - 16 + drop],
+                [cx + 50 * side, base_y - 2 + drop],
+                [cx + 72 * side, base_y + 14 + drop],
+            ], dtype=np.int32)
+            cv2.polylines(tex, [pts], False, bgr("#3a2114", alpha), w, lineType=cv2.LINE_AA)
+        for t in np.linspace(-0.85, 0.85, 18):
+            bx = int(cx + side * t * 70)
+            by = int(base_y - 8 + abs(t) * 18)
+            tx = bx + side * (-2 + int(t * 6))
+            ty = by - 13 - int(abs(t) * 4)
+            cv2.line(tex, (bx, by), (tx, ty), bgr("#1d100a", 235), 2, lineType=cv2.LINE_AA)
+
+    draw_brow(258, 1)
+    draw_brow(510, -1)
+
+    # ─── Eyes (the dramatic feature) ───────────────────────────────────────
+    sclera_color = bgr("#fbf6ec")
+    eyeliner = bgr("#0d0604")
+    iris_outer = bgr("#7a4a10")
+    iris_main = bgr("#dc9a26")
+    iris_pupil = bgr("#0c0805")
+    catchlight = bgr("#fffbe8", 245)
+    lash_color = bgr("#080402")
+    lid_color = bgr("#f0d4be")
+
+    def draw_eye(cx: int, cy: int, side: int) -> None:
+        open_scale = 1.0 - blink
+        eye_w = 96
+        eye_h = max(8, int(20 + 26 * open_scale))
+
+        # Sclera
+        cv2.ellipse(tex, (cx, cy), (eye_w, eye_h), 0, 0, 360, sclera_color, -1, lineType=cv2.LINE_AA)
+
+        # Upper eye-socket shadow
+        soft_blob(
+            bgr("#ad8a6e", 160),
+            lambda m: cv2.ellipse(m, (cx, cy - 14), (eye_w + 6, eye_h + 10), 0, 180, 360, 255, -1, lineType=cv2.LINE_AA),
+            blur_sigma=8,
+        )
+
+        # Iris + pupil
+        iris_x = int(cx + yaw * 28)
+        iris_y = cy + 4
+        if open_scale > 0.18:
+            cv2.circle(tex, (iris_x, iris_y), 32, iris_outer, -1, lineType=cv2.LINE_AA)
+            cv2.circle(tex, (iris_x, iris_y), 28, iris_main, -1, lineType=cv2.LINE_AA)
+            for ang in range(0, 360, 12):
+                rad = math.radians(ang)
+                cv2.line(
+                    tex,
+                    (iris_x + int(math.cos(rad) * 12), iris_y + int(math.sin(rad) * 12)),
+                    (iris_x + int(math.cos(rad) * 27), iris_y + int(math.sin(rad) * 27)),
+                    bgr("#a0680a", 170), 1, lineType=cv2.LINE_AA,
+                )
+            cv2.circle(tex, (iris_x, iris_y), 14, iris_pupil, -1, lineType=cv2.LINE_AA)
+            cv2.circle(tex, (iris_x - 9, iris_y - 10), 8, catchlight, -1, lineType=cv2.LINE_AA)
+            cv2.circle(tex, (iris_x + 11, iris_y + 7), 3, bgr("#ffffff", 200), -1, lineType=cv2.LINE_AA)
+
+        # Closed lid overlay when blinking heavily
+        if blink > 0.55:
+            lid_h = max(4, int((blink - 0.4) * eye_h * 1.7))
+            cv2.ellipse(tex, (cx, cy), (eye_w, lid_h), 0, 0, 360, lid_color, -1, lineType=cv2.LINE_AA)
+
+        # Eyeliner — thicker on top, with wing on outer corner
+        cv2.ellipse(tex, (cx, cy), (eye_w, eye_h), 0, 180, 360, eyeliner, 6, lineType=cv2.LINE_AA)
+        cv2.ellipse(tex, (cx, cy), (eye_w, eye_h), 0, 0, 180, bgr("#1a0e08"), 3, lineType=cv2.LINE_AA)
+        wing_base = (cx + side * (eye_w - 4), cy + 2)
+        wing_tip = (cx + side * (eye_w + 22), cy - 14)
+        cv2.line(tex, wing_base, wing_tip, eyeliner, 5, lineType=cv2.LINE_AA)
+
+        # UPPER LASHES — long curved strokes, longer toward outer corner
+        for i in range(16):
+            t = i / 15.0
+            outer_t = t if side > 0 else (1.0 - t)
+            length = 22 + int(outer_t * 32)
+            base_x = int(cx + (-eye_w * 0.95 + t * eye_w * 1.9))
+            base_y = int(cy - eye_h * 0.92)
+            curl = -side * (0.18 + outer_t * 0.55)
+            tip_x = base_x + int(curl * length * 0.7)
+            tip_y = base_y - length
+            cv2.line(tex, (base_x, base_y), (tip_x, tip_y), lash_color, 3, lineType=cv2.LINE_AA)
+
+        # Extra outer-corner accent lashes
+        for i in range(4):
+            base_x = cx + side * (eye_w - 8 - i * 5)
+            base_y = cy - 18 + i * 2
+            length = 56 - i * 7
+            tip_x = base_x + side * 30
+            tip_y = base_y - length
+            cv2.line(tex, (base_x, base_y), (tip_x, tip_y), lash_color, 3, lineType=cv2.LINE_AA)
+
+        # LOWER LASHES — short, sparse
+        for i in range(10):
+            t = i / 9.0
+            base_x = int(cx + (-eye_w * 0.85 + t * eye_w * 1.7))
+            base_y = int(cy + eye_h * 0.85)
+            tip_y = base_y + 12 + int(abs(t - 0.5) * 6)
+            tip_x = base_x + int((t - 0.5) * 8)
+            cv2.line(tex, (base_x, base_y), (tip_x, tip_y), lash_color, 2, lineType=cv2.LINE_AA)
+
+    draw_eye(258, 410, 1)
+    draw_eye(510, 410, -1)
+
+    # ─── Soft nose shadow (just enough to break flatness) ──────────────────
+    soft_blob(
+        bgr("#bf9e85", 100),
+        lambda m: cv2.ellipse(m, (384, 510), (16, 38), 0, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        blur_sigma=10,
+    )
+
+    # ─── Lips (glossy coral with cupid's bow) ──────────────────────────────
+    cy_lip = 580
+    mw = 100 + int(22 * smile)
+    upper_h = 22
+    lower_h = 26
+    opening = max(0, int(mouth_open * 50))
+
+    lipstick = bgr("#c33d52")
+    lipstick_dark = bgr("#9a2638")
+    lip_inner = bgr("#3a0c14")
+
+    # Lower lip
+    lower_pts = np.array([
+        [384 - mw, cy_lip + opening // 2],
+        [384 - mw + 14, cy_lip + opening // 2 + lower_h - 4],
+        [384 - 30, cy_lip + opening // 2 + lower_h + 4],
+        [384, cy_lip + opening // 2 + lower_h + 8],
+        [384 + 30, cy_lip + opening // 2 + lower_h + 4],
+        [384 + mw - 14, cy_lip + opening // 2 + lower_h - 4],
+        [384 + mw, cy_lip + opening // 2],
+    ], dtype=np.int32)
+    cv2.fillPoly(tex, [lower_pts], lipstick, lineType=cv2.LINE_AA)
+    cv2.polylines(tex, [lower_pts], True, lipstick_dark, 2, lineType=cv2.LINE_AA)
+
+    # Upper lip with cupid's bow
+    upper_pts = np.array([
+        [384 - mw, cy_lip - opening // 2],
+        [384 - mw + 18, int(cy_lip - opening // 2 - upper_h * 0.5)],
+        [384 - 38, cy_lip - opening // 2 - upper_h],
+        [384 - 16, cy_lip - opening // 2 - upper_h + 8],
+        [384, cy_lip - opening // 2 - upper_h + 11],
+        [384 + 16, cy_lip - opening // 2 - upper_h + 8],
+        [384 + 38, cy_lip - opening // 2 - upper_h],
+        [384 + mw - 18, int(cy_lip - opening // 2 - upper_h * 0.5)],
+        [384 + mw, cy_lip - opening // 2],
+    ], dtype=np.int32)
+    cv2.fillPoly(tex, [upper_pts], lipstick_dark, lineType=cv2.LINE_AA)
+    upper_inner = upper_pts.copy()
+    upper_inner[1:-1, 1] += 3
+    cv2.fillPoly(tex, [upper_inner], lipstick, lineType=cv2.LINE_AA)
+
+    # Mouth interior when open
+    if opening > 4:
+        cv2.ellipse(tex, (384, cy_lip), (mw - 22, opening), 0, 0, 360, lip_inner, -1, lineType=cv2.LINE_AA)
+        if opening > 12:
+            cv2.ellipse(
+                tex, (384, cy_lip - opening // 3),
+                (mw - 38, max(3, opening // 4)), 0, 0, 180,
+                bgr("#fff0d8", 220), -1, lineType=cv2.LINE_AA,
+            )
+
+    # Gloss highlights
+    soft_blob(
+        bgr("#ffe2e8", 230),
+        lambda m: cv2.ellipse(m, (384, cy_lip + opening // 2 + lower_h - 4), (mw - 36, 5), 0, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        blur_sigma=4,
+    )
+    cv2.ellipse(tex, (384, cy_lip + opening // 2 + lower_h - 2), (16, 3), 0, 0, 360, bgr("#ffffff", 245), -1, lineType=cv2.LINE_AA)
+    soft_blob(
+        bgr("#ffe2e8", 200),
+        lambda m: (
+            cv2.ellipse(m, (384 - 28, cy_lip - opening // 2 - upper_h + 9), (16, 3), -10, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+            cv2.ellipse(m, (384 + 28, cy_lip - opening // 2 - upper_h + 9), (16, 3), 10, 0, 360, 255, -1, lineType=cv2.LINE_AA),
+        ),
+        blur_sigma=3,
+    )
+
+    return tex
+
+
+def render_character_mask(
+    frame: np.ndarray,
+    points: np.ndarray,
+    style: CartoonStyle,
+    coefficients: Dict[str, float],
+) -> np.ndarray:
+    # Pick texture: explicit `character` opt-in still drives the procedural
+    # generator (useful as a fallback / for live-coefficient features). Default
+    # path is the artist/AI-rendered static PNG.
+    if style.character == "porcelain_cup":
+        texture = _porcelain_cup_texture(coefficients)
+    elif style.feature_regions:
+        # Static-asset path: deform the cup's drawn eyes / mouth per frame so
+        # the mask reacts to blinks and lip motion instead of looking pasted.
+        texture = _apply_local_expressions(
+            style.texture,
+            style.feature_regions,
+            coefficients,
+            landmarks=style.filter_landmarks,
+            mouth_triangles=style.mouth_triangles,
+        )
+    else:
+        texture = style.texture
+
+    # Warp footprint comes from the manifest's `warp_preset` so the same code
+    # path can serve any character_mask asset with its own head-aligned crop.
+    if style.warp_preset == "porcelain_cup" or style.character == "porcelain_cup":
+        # Tuned to match the reference AR lens footprint: cup rim sits up over
+        # the hairline, body extends well below the chin to the upper chest,
+        # and the bowl is wider than the face so it dominates the head.
+        warp_kwargs = dict(
+            top_scale=0.55,
+            bottom_scale=0.32,
+            side_scale_top=0.95,
+            side_scale_bottom=0.88,
+        )
+    else:
+        warp_kwargs = dict(
+            top_scale=0.36,
+            bottom_scale=0.16,
+            side_scale_top=0.62,
+            side_scale_bottom=0.56,
+        )
+
+    canvas = _warp_perspective_to_canvas(frame.shape, texture, points, **warp_kwargs)
+    canvas = _apply_expression_transparency(canvas, points, coefficients, reveal_eyes=False, reveal_mouth=True)
+    return _alpha_composite_bgra(frame, canvas)
 
 
 def render_cartoon_face(
@@ -760,18 +1539,36 @@ def render_cartoon_face(
     style: CartoonStyle,
     coefficients: Dict[str, float],
 ) -> np.ndarray:
-    """Render the filter as a Banuba-style face mask.
+    """Render the filter onto the live face.
 
-    1. Perspective placement — aligns the filter to the live face (position,
-       scale, rotation, tilt) via a 4-point warp.
+    Mesh warp path (preferred): if the filter has known canonical landmarks +
+    Delaunay triangles, deform the texture triangle-by-triangle onto the live
+    468-landmark face mesh. The filter then conforms to actual face geometry
+    (cheek/jaw/brow movement) — this is what removes the sticker feel.
 
-    2. Always-on eye + mouth cutouts — eye/brow and mouth regions are permanently
-       transparent so the real eyes (including blinks) and real lips (including
-       talking/smiling) always show through the mask in sync with the video.
+    Perspective fallback: when no landmarks are available (abstract artwork
+    that MediaPipe can't detect), use a 4-point perspective warp.
+
+    After warping, real eyes + mouth are punched out so blinks and lip movement
+    stay live, then the result is composited with the chosen blend mode.
     """
-    canvas = _warp_perspective_to_canvas(frame.shape, style.texture, points)
-    canvas = _apply_expression_transparency(canvas, points, coefficients)
-    return _composite_filter(frame, canvas, points)
+    if style.filter_type == "character_mask":
+        return render_character_mask(frame, points, style, coefficients)
+
+    if style.filter_landmarks is not None and style.filter_triangles:
+        n = len(style.filter_landmarks)
+        canvas = _warp_mesh(
+            frame, style.texture, style.filter_landmarks, points[:n], style.filter_triangles
+        )
+    else:
+        canvas = _warp_perspective_to_canvas(frame.shape, style.texture, points)
+
+    canvas = _apply_expression_transparency(
+        canvas, points, coefficients,
+        reveal_eyes=style.reveal_eyes,
+        reveal_mouth=style.reveal_mouth,
+    )
+    return _composite_filter(frame, canvas, points, blend_mode=style.blend_mode)
 
 
 def analyze_video(video_url: str) -> Dict[str, object]:
@@ -914,6 +1711,27 @@ def mux_original_audio(input_video_path: str, processed_video_path: str, output_
     subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def _try_fetch_filter_manifest(overlay_url: str) -> Optional[Dict[str, object]]:
+    """Best-effort fetch of `<overlay>.json` sidecar manifest.
+
+    Built-in filters can ship a manifest at the same path with `.png` swapped
+    for `.json` — used to provide canonical landmarks for stylized artwork
+    that MediaPipe can't auto-detect, plus blend_mode and reveal flags.
+    """
+    import json
+    if "." not in overlay_url.rsplit("/", 1)[-1]:
+        return None
+    base, _, _ = overlay_url.rpartition(".")
+    manifest_url = f"{base}.json"
+    try:
+        response = requests.get(manifest_url, timeout=10)
+        if response.status_code != 200:
+            return None
+        return json.loads(response.text)
+    except (requests.RequestException, json.JSONDecodeError, ValueError):
+        return None
+
+
 def load_styles_for_assignments(assignments: List[Dict[str, str]], tmpdir: str) -> Dict[str, CartoonStyle]:
     styles_by_face: Dict[str, CartoonStyle] = {}
     overlay_cache: Dict[str, CartoonStyle] = {}
@@ -926,7 +1744,8 @@ def load_styles_for_assignments(assignments: List[Dict[str, str]], tmpdir: str) 
             overlay_rgba = cv2.imread(overlay_path, cv2.IMREAD_UNCHANGED)
             if overlay_rgba is None or overlay_rgba.ndim != 3 or overlay_rgba.shape[2] != 4:
                 raise ValueError("Overlay image must have an alpha channel")
-            overlay_cache[overlay_url] = build_style_from_overlay(overlay_rgba)
+            manifest = _try_fetch_filter_manifest(overlay_url)
+            overlay_cache[overlay_url] = build_style_from_overlay(overlay_rgba, manifest)
         styles_by_face[assignment["faceId"]] = overlay_cache[overlay_url]
 
     return styles_by_face

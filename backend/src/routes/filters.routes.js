@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join, extname, basename } from "path";
 
@@ -13,7 +13,19 @@ const router = Router();
 function toDisplayName(filename) {
   return basename(filename, extname(filename))
     .replace(/[-_]/g, " ")
+    .replace(/^Ar /, "")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function readFilterManifest(filename) {
+  const manifestPath = join(FILTERS_DIR, `${basename(filename, extname(filename))}.json`);
+  if (!existsSync(manifestPath)) return {};
+
+  try {
+    return JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 router.get("/", (req, res) => {
@@ -25,12 +37,27 @@ router.get("/", (req, res) => {
   }
 
   const baseUrl = `${req.protocol}://${req.get("host")}`;
-  const filters = files.map((filename) => ({
-    id: `builtin-${filename}`,
-    name: toDisplayName(filename),
-    filename,
-    url: `${baseUrl}/filters/${filename}`,
-  }));
+  const includeClassic = req.query.includeClassic === "1";
+  const filters = files
+    .map((filename) => {
+      const manifest = readFilterManifest(filename);
+      return {
+        id: `builtin-${filename}`,
+        name: manifest.title || toDisplayName(filename),
+        filename,
+        url: `${baseUrl}/filters/${filename}`,
+        category: manifest.category || "Built-in filter",
+        description: manifest.description || "",
+        isAR: Boolean(manifest.ar_ready),
+        filterType: manifest.filter_type || manifest.coverage || "accessory",
+        character: manifest.character || "",
+        blendMode: manifest.blend_mode || "over",
+        revealEyes: manifest.reveal_eyes !== false,
+        revealMouth: manifest.reveal_mouth !== false
+      };
+    })
+    .filter((filter) => includeClassic || filter.isAR)
+    .sort((a, b) => Number(b.isAR) - Number(a.isAR) || a.name.localeCompare(b.name));
 
   res.json(filters);
 });

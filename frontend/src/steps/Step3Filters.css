@@ -1,31 +1,53 @@
-.s3 { padding: 24px 20px; max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+/* Two-column layout mirroring step 2 (.d2-wrap / .d2-left / .d2-right) */
+.s3-wrap {
+  display: flex;
+  height: calc(100vh - 56px);
+}
+.s3-left {
+  width: 50%;
+  flex-shrink: 0;
+  border-right: 1px solid rgba(244,114,182,0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 32px;
+  overflow-y: auto;
+}
+.s3-right {
+  width: 50%;
+  background: #080508;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 32px;
+  overflow: hidden;
+}
 
 /* Preview — sized to fit the video at its native aspect ratio so face boxes
    line up with the actual video bounds (not letterboxed margins). */
 .f3-preview {
-  width: 100%;
-  border-radius: 14px;
+  border-radius: 16px;
   background: #0d0d0d;
   border: 1px solid rgba(255,255,255,0.06);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
-  min-height: 320px;
-  max-height: 60vh;
+  padding: 14px;
+  max-width: 100%;
+  max-height: 100%;
 }
 .f3-prev-inner {
   position: relative;
+  display: inline-block;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 6px 28px rgba(0,0,0,0.5);
   max-height: 100%;
   max-width: 100%;
-  display: inline-block;
-  border-radius: 10px;
-  overflow: hidden;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
 }
 .f3-prev-img {
   display: block;
-  max-height: 56vh;
+  max-height: 70vh;
   max-width: 100%;
   height: auto;
   width: auto;
@@ -135,6 +157,12 @@
   border-radius: 6px; background: rgba(255,255,255,0.06); color: #555;
 }
 .f3-sec-badge.builtin { background: rgba(244,114,182,0.1); color: #f472b6; }
+.f3-sec-copy {
+  margin-top: -3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #666;
+}
 .f3-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; }
 
 /* Filter card */
@@ -159,6 +187,30 @@
 .f3-name { font-size: 9px; color: #666; text-align: center; word-break: break-all; line-height: 1.3; }
 .f3-card.on .f3-name { color: #f472b6; }
 .f3-builtin { position: absolute; top: 5px; right: 5px; font-size: 9px; color: #f472b6; }
+.f3-ar-pill {
+  position: absolute;
+  top: 5px;
+  right: 18px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: #061013;
+  background: #67e8f9;
+  border-radius: 999px;
+  padding: 2px 5px;
+}
+.f3-char-pill {
+  position: absolute;
+  top: 5px;
+  left: 24px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: #12070b;
+  background: #f9a8d4;
+  border-radius: 999px;
+  padding: 2px 5px;
+}
 .f3-rm {
   position: absolute; top: 4px; right: 4px;
   background: rgba(239,68,68,0.15); border: none;
@@ -196,3 +248,9 @@
 .f3-process:hover { box-shadow: 0 6px 24px rgba(244,114,182,0.45); transform: translateY(-1px); }
 .f3-process.dim { opacity: 0.5; cursor: not-allowed; }
 .f3-process svg { width: 15px; height: 15px; fill: #fff; }
+
+@media (max-width: 860px) {
+  .s3-wrap { flex-direction: column; height: auto; }
+  .s3-left { width: 100%; border-right: none; border-bottom: 1px solid rgba(244,114,182,0.08); padding: 24px 20px; }
+  .s3-right { width: 100%; padding: 24px 20px; }
+}

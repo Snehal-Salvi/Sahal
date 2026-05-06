@@ -1,0 +1,14 @@
+{
+  "title": "Porcelain Cup",
+  "category": "AR filter",
+  "ar_ready": true,
+  "blend_mode": "over",
+  "reveal_eyes": false,
+  "reveal_mouth": false,
+  "strip_background": false,
+  "coverage": "character_mask",
+  "filter_type": "character_mask",
+  "character": "",
+  "warp_preset": "porcelain_cup",
+  "description": "Photoreal porcelain teacup AR mask — tracks head pose so the cup-face stays welded to the head."
+}

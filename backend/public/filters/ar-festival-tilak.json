@@ -1,0 +1,13 @@
+{
+  "title": "Festival Tilak",
+  "category": "AR filter",
+  "ar_ready": true,
+  "blend_mode": "over",
+  "reveal_eyes": true,
+  "reveal_mouth": true,
+  "strip_background": false,
+  "coverage": "accessory",
+  "filter_type": "accessory",
+  "character": "",
+  "description": "Festive forehead and cheek accents designed to leave facial expressions fully visible."
+}
