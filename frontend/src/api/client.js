@@ -35,6 +35,19 @@ export async function analyzeVideoFaces(videoId) {
   return data;
 }
 
+export async function analyzeUploadedVideoFaces(videoId, file) {
+  const formData = new FormData();
+  formData.append("video", file);
+
+  const { data } = await api.post(`/videos/${videoId}/analyze-upload`, formData, {
+    headers: {
+      "Content-Type": "multipart/form-data"
+    }
+  });
+
+  return data;
+}
+
 export async function queueVideoProcessing(videoId, filterAssignments) {
   const { data } = await api.post(`/videos/${videoId}/process`, {
     filterAssignments

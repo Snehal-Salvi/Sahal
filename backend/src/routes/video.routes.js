@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  analyzeUploadedVideoFaces,
   analyzeVideoFaces,
   getVideoStatus,
   overlayUpload,
@@ -18,6 +19,11 @@ router.post(
   "/upload-overlay",
   overlayUpload.single("overlay"),
   asyncHandler(uploadOverlay)
+);
+router.post(
+  "/:videoId/analyze-upload",
+  videoUpload.single("video"),
+  asyncHandler(analyzeUploadedVideoFaces)
 );
 router.post("/:videoId/analyze", asyncHandler(analyzeVideoFaces));
 router.post("/:videoId/process", asyncHandler(queueVideoProcessing));

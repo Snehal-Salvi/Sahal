@@ -71,6 +71,9 @@ Optional AI-service tuning in `ai-service/.env`:
 - `CARTOON_BROW_RAISE_MIN` and `CARTOON_BROW_RAISE_MAX`: tune eyebrow motion sensitivity
 - `CARTOON_EXPRESSION_SMOOTHING`: higher values react faster, lower values look steadier
 - `CARTOON_MAX_FACES`: cap concurrent tracked faces
+- `CARTOON_ANALYSIS_SAMPLE_FRAMES`: number of frames sampled for initial face detection, default `8`
+- `CARTOON_ANALYSIS_DETECT_WIDTH`: max frame width sent to MediaPipe during analysis, default `720`
+- `CARTOON_ANALYSIS_MIN_DETECTION_CONFIDENCE`: initial detection threshold, default `0.35`
 
 8. Start the frontend:
 

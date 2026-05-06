@@ -16,9 +16,10 @@ import requests
 mp_face_mesh = mp.solutions.face_mesh
 
 EPSILON = 1e-6
-ANALYSIS_SAMPLE_FRAMES = 2      # 2 frames is enough for stable face ID
-MAX_ANALYSIS_FRAME_WIDTH = 960  # preview resize
-MAX_ANALYSIS_DETECT_WIDTH = 480 # MediaPipe input resize (smaller = much faster)
+DEFAULT_ANALYSIS_SAMPLE_FRAMES = 8
+DEFAULT_MAX_ANALYSIS_FRAME_WIDTH = 960
+DEFAULT_MAX_ANALYSIS_DETECT_WIDTH = 720
+DEFAULT_ANALYSIS_MIN_DETECTION_CONFIDENCE = 0.35
 
 FACE_OVAL = [
     10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379,
@@ -165,6 +166,26 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def analysis_sample_frames() -> int:
+    return max(1, env_int("CARTOON_ANALYSIS_SAMPLE_FRAMES", DEFAULT_ANALYSIS_SAMPLE_FRAMES))
+
+
+def max_analysis_frame_width() -> int:
+    return max(320, env_int("CARTOON_ANALYSIS_FRAME_WIDTH", DEFAULT_MAX_ANALYSIS_FRAME_WIDTH))
+
+
+def max_analysis_detect_width() -> int:
+    return max(320, env_int("CARTOON_ANALYSIS_DETECT_WIDTH", DEFAULT_MAX_ANALYSIS_DETECT_WIDTH))
+
+
+def analysis_min_detection_confidence() -> float:
+    return clamp(
+        env_float("CARTOON_ANALYSIS_MIN_DETECTION_CONFIDENCE", DEFAULT_ANALYSIS_MIN_DETECTION_CONFIDENCE),
+        0.05,
+        0.95,
+    )
+
+
 def remap(value: float, source_min: float, source_max: float) -> float:
     return clamp((value - source_min) / max(source_max - source_min, EPSILON), 0.0, 1.0)
 
@@ -222,7 +243,9 @@ def encode_image_data_url(image: np.ndarray, extension: str = ".jpg") -> str:
     return f"data:{mime_type};base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}"
 
 
-def resize_for_preview(frame: np.ndarray, max_width: int = MAX_ANALYSIS_FRAME_WIDTH) -> np.ndarray:
+def resize_for_preview(frame: np.ndarray, max_width: Optional[int] = None) -> np.ndarray:
+    if max_width is None:
+        max_width = max_analysis_frame_width()
     frame_height, frame_width = frame.shape[:2]
     if frame_width <= max_width:
         return frame
@@ -253,6 +276,15 @@ def normalize_box(box: Tuple[int, int, int, int], frame_shape: Tuple[int, int, i
         "width": round((x2 - x1) / max(frame_width, 1), 6),
         "height": round((y2 - y1) / max(frame_height, 1), 6),
     }
+
+
+def denormalize_box(box: Dict[str, float], frame_shape: Tuple[int, int, int]) -> Tuple[int, int, int, int]:
+    frame_height, frame_width = frame_shape[:2]
+    x1 = int(clamp(float(box.get("x", 0.0)) * frame_width, 0, frame_width - 1))
+    y1 = int(clamp(float(box.get("y", 0.0)) * frame_height, 0, frame_height - 1))
+    x2 = int(clamp(float(box.get("x", 0.0) + box.get("width", 0.0)) * frame_width, x1 + 1, frame_width))
+    y2 = int(clamp(float(box.get("y", 0.0) + box.get("height", 0.0)) * frame_height, y1 + 1, frame_height))
+    return x1, y1, x2, y2
 
 
 def crop_box(frame: np.ndarray, box: Tuple[int, int, int, int]) -> np.ndarray:
@@ -1589,7 +1621,7 @@ def _analyze_video_from_path(input_path: str) -> Dict[str, object]:
     if not capture.isOpened():
         raise ValueError("Input video could not be opened")
 
-    sample_indices = sample_frame_indices(capture, ANALYSIS_SAMPLE_FRAMES)
+    sample_indices = sample_frame_indices(capture, analysis_sample_frames())
     profiles: List[FaceProfile] = []
     sample_snapshots: List[Dict[str, object]] = []
 
@@ -1599,7 +1631,7 @@ def _analyze_video_from_path(input_path: str) -> Dict[str, object]:
         static_image_mode=True,
         max_num_faces=tuning.max_num_faces,
         refine_landmarks=False,
-        min_detection_confidence=0.5,
+        min_detection_confidence=analysis_min_detection_confidence(),
     ) as face_mesh:
         for frame_index in sample_indices:
             capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
@@ -1607,19 +1639,21 @@ def _analyze_video_from_path(input_path: str) -> Dict[str, object]:
             if not success:
                 continue
 
-            # Downscale before MediaPipe — the model runs much faster on smaller input
+            # Downscale before MediaPipe. Keep enough resolution for smaller
+            # side-by-side faces, but still avoid feeding full 4K frames.
             h0, w0 = frame.shape[:2]
-            if w0 > MAX_ANALYSIS_DETECT_WIDTH:
-                scale = MAX_ANALYSIS_DETECT_WIDTH / w0
-                small = cv2.resize(frame, (MAX_ANALYSIS_DETECT_WIDTH, max(1, int(h0 * scale))), interpolation=cv2.INTER_AREA)
+            detect_width = max_analysis_detect_width()
+            if w0 > detect_width:
+                scale = detect_width / w0
+                small = cv2.resize(frame, (detect_width, max(1, int(h0 * scale))), interpolation=cv2.INTER_AREA)
             else:
                 small = frame
 
             detections_small = detect_faces(face_mesh, small, tuning, with_thumbnails=False)
 
             # Scale landmark coords back to full-resolution frame space
-            if w0 > MAX_ANALYSIS_DETECT_WIDTH:
-                inv = w0 / MAX_ANALYSIS_DETECT_WIDTH
+            if w0 > detect_width:
+                inv = w0 / detect_width
                 for det in detections_small:
                     det.points[:] *= inv
                     det.bbox = (int(det.bbox[0]*inv), int(det.bbox[1]*inv),
@@ -1674,6 +1708,13 @@ def _analyze_video_from_path(input_path: str) -> Dict[str, object]:
 
     representative_snapshot = max(sample_snapshots, key=lambda snapshot: len(snapshot["faces"]))
     preview_boxes = {face["faceId"]: face["representativeBox"] for face in representative_snapshot["faces"]}
+    preview_thumbnails = {
+        face_id: create_face_thumbnail(
+            representative_snapshot["frame"],
+            denormalize_box(box, representative_snapshot["frame"].shape),
+        )
+        for face_id, box in preview_boxes.items()
+    }
 
     faces = []
     for profile in sorted(profiles, key=lambda item: item.face_id):
@@ -1681,7 +1722,7 @@ def _analyze_video_from_path(input_path: str) -> Dict[str, object]:
             {
                 "faceId": profile.face_id,
                 "label": profile.label,
-                "thumbnailDataUrl": profile.thumbnail_data_url,
+                "thumbnailDataUrl": preview_thumbnails.get(profile.face_id, profile.thumbnail_data_url),
                 "representativeBox": preview_boxes.get(profile.face_id, profile.representative_box),
                 "embedding": [round(float(value), 6) for value in profile.descriptor.tolist()],
             }

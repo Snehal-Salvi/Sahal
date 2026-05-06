@@ -52,9 +52,10 @@ app.use((error, req, res, next) => {
     "Only transparent PNG overlay images are allowed"
   ]);
   const statusCode =
-    knownBadRequestMessages.has(error.message) || error.code === "LIMIT_FILE_SIZE"
+    error.statusCode ||
+    (knownBadRequestMessages.has(error.message) || error.code === "LIMIT_FILE_SIZE"
       ? 400
-      : 500;
+      : 500);
 
   res.status(statusCode).json({
     message:

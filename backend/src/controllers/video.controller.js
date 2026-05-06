@@ -68,6 +68,26 @@ const overlayFileFilter = (req, file, cb) => {
   cb(null, true);
 };
 
+async function ensureOriginalUploadComplete(video) {
+  if (video.originalUrl) {
+    return video;
+  }
+
+  const pendingUpload = pendingCloudinaryUploads.get(String(video._id));
+  if (pendingUpload) {
+    await pendingUpload;
+    const refreshedVideo = await Video.findById(video._id);
+    if (refreshedVideo?.originalUrl) {
+      return refreshedVideo;
+    }
+  }
+
+  throw Object.assign(
+    new Error("Video upload is still finalizing. Please try again in a moment."),
+    { statusCode: 409 }
+  );
+}
+
 export const videoUpload = multer({
   storage,
   fileFilter: videoFileFilter,
@@ -205,15 +225,17 @@ export async function queueVideoProcessing(req, res) {
     });
   }
 
-  video.overlayImageUrl = normalizedAssignments[0]?.overlayImageUrl;
-  video.filterAssignments = normalizedAssignments;
-  video.error = undefined;
-  await video.save();
+  const readyVideo = await ensureOriginalUploadComplete(video);
+
+  readyVideo.overlayImageUrl = normalizedAssignments[0]?.overlayImageUrl;
+  readyVideo.filterAssignments = normalizedAssignments;
+  readyVideo.error = undefined;
+  await readyVideo.save();
 
   const job = await videoQueue.add(
     "process-video",
     {
-      videoId: video.id
+      videoId: readyVideo.id
     },
     {
       attempts: 3,
@@ -226,14 +248,14 @@ export async function queueVideoProcessing(req, res) {
     }
   );
 
-  video.status = "queued";
-  video.jobId = String(job.id);
-  await video.save();
+  readyVideo.status = "queued";
+  readyVideo.jobId = String(job.id);
+  await readyVideo.save();
 
   return res.json({
     message: "Video queued for processing",
     jobId: job.id,
-    video
+    video: readyVideo
   });
 }
 
@@ -245,7 +267,40 @@ export async function analyzeVideoFaces(req, res) {
     return res.status(404).json({ message: "Video not found" });
   }
 
-  const analysis = await analyzeVideoWithAI({ videoUrl: video.originalUrl });
+  const readyVideo = await ensureOriginalUploadComplete(video);
+  const analysis = await analyzeVideoWithAI({ videoUrl: readyVideo.originalUrl });
+
+  readyVideo.detectedFaces = (analysis.faces || []).map((face) => ({
+    faceId: face.faceId,
+    label: face.label,
+    embedding: face.embedding || [],
+    representativeBox: face.representativeBox || undefined
+  }));
+  await readyVideo.save();
+
+  return res.json({
+    message: "Video analyzed successfully",
+    video: readyVideo,
+    analysis
+  });
+}
+
+export async function analyzeUploadedVideoFaces(req, res) {
+  const { videoId } = req.params;
+
+  if (!req.file) {
+    return res.status(400).json({ message: "Video file is required" });
+  }
+
+  const video = await Video.findById(videoId);
+  if (!video) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  const analysis = await analyzeVideoBufferWithAI({
+    buffer: req.file.buffer,
+    filename: req.file.originalname
+  });
 
   video.detectedFaces = (analysis.faces || []).map((face) => ({
     faceId: face.faceId,

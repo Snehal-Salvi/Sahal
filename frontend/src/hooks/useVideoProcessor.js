@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  analyzeUploadedVideoFaces,
   analyzeVideoFaces,
   getBuiltInFilters,
   getVideoStatus,
@@ -187,7 +188,7 @@ export function useVideoProcessor() {
 
   // Minimum time the step-2 scanning animation stays visible, even if the
   // backend returns faster. Keeps the UX from flickering past too quickly.
-  const MIN_ANALYZE_DURATION_MS = 10000;
+  const MIN_ANALYZE_DURATION_MS = 2500;
 
   async function handleAnalyzeFaces() {
     if (!videoFile) { setError("Choose a video file first."); return; }
@@ -198,9 +199,12 @@ export function useVideoProcessor() {
       const { video, analysis: uploadAnalysis } = await ensureVideoUploaded();
       // Faces come back from /upload now — only fall back to /analyze if we
       // somehow have a video record without analysis (e.g. legacy record).
+      // Re-scans use the local File directly so they avoid Cloudinary download time.
       let analysisResult = uploadAnalysis;
       if (!analysisResult) {
-        const response = await analyzeVideoFaces(video._id);
+        const response = videoFile
+          ? await analyzeUploadedVideoFaces(video._id, videoFile)
+          : await analyzeVideoFaces(video._id);
         analysisResult = response.analysis;
         setVideoRecord(response.video);
       }
