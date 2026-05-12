@@ -20,6 +20,11 @@ DEFAULT_ANALYSIS_SAMPLE_FRAMES = 8
 DEFAULT_MAX_ANALYSIS_FRAME_WIDTH = 960
 DEFAULT_MAX_ANALYSIS_DETECT_WIDTH = 720
 DEFAULT_ANALYSIS_MIN_DETECTION_CONFIDENCE = 0.35
+DEFAULT_PROCESS_MIN_DETECTION_CONFIDENCE = 0.32
+DEFAULT_PROCESS_MIN_TRACKING_CONFIDENCE = 0.32
+DEFAULT_PROCESS_HOLD_FRAMES = 0
+DEFAULT_PROCESS_INITIAL_CONFIRM_FRAMES = 8
+DEFAULT_FACE_DETECTION_PADDING_RATIO = 0.08
 
 FACE_OVAL = [
     10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379,
@@ -86,35 +91,100 @@ class CartoonStyle:
 
 
 @dataclass
-class ExpressionState:
-    values: Dict[str, float] = field(default_factory=dict)
+class OneEuroFilter:
+    """Velocity-adaptive low-pass filter (Casiez et al. 2012).
 
-    def smooth(self, current: Dict[str, float], alpha: float) -> Dict[str, float]:
-        if not self.values:
-            self.values = current.copy()
-            return self.values.copy()
+    The classic EMA either jitters at rest (high alpha) or lags during
+    motion (low alpha). One-Euro fixes both: the LP cutoff frequency
+    *rises with measured speed*, so the mask is jitter-free when the
+    head is still but stops dragging the moment the user moves.
 
-        for key, value in current.items():
-            previous = self.values.get(key, value)
-            self.values[key] = previous + alpha * (value - previous)
-
-        return self.values.copy()
-
-
-@dataclass
-class LandmarkSmoother:
-    """Per-face EMA smoother for the raw 468×2 landmark coordinate array."""
+    Operates on any-shape numpy array. `speed_axis` is the axis along
+    which to take the magnitude for the per-element cutoff — set to 1
+    for an (N, 2) landmark array (per-landmark speed) or leave None for
+    a 1-D vector (per-element |speed|).
+    """
+    min_cutoff: float = 1.7
+    beta: float = 0.012
+    d_cutoff: float = 1.0
+    dt: float = 1.0 / 30.0
     smoothed: Optional[np.ndarray] = None
+    dx_hat: Optional[np.ndarray] = None
 
-    def update(self, points: np.ndarray, alpha: float) -> np.ndarray:
-        if self.smoothed is None:
-            self.smoothed = points.copy()
+    @staticmethod
+    def _alpha(cutoff: float, dt: float) -> float:
+        tau = 1.0 / (2.0 * math.pi * max(cutoff, EPSILON))
+        return 1.0 / (1.0 + tau / max(dt, EPSILON))
+
+    def update(self, x: np.ndarray, dt: Optional[float] = None,
+               speed_axis: Optional[int] = None) -> np.ndarray:
+        if dt is None or dt <= 0:
+            dt = self.dt
+        if self.smoothed is None or self.smoothed.shape != x.shape:
+            self.smoothed = x.astype(np.float32, copy=True)
+            self.dx_hat = np.zeros_like(self.smoothed)
+            return self.smoothed.copy()
+
+        dx = (x - self.smoothed) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        self.dx_hat = self.dx_hat + a_d * (dx - self.dx_hat)
+
+        if speed_axis is None:
+            speed = np.abs(self.dx_hat)
         else:
-            self.smoothed = self.smoothed + alpha * (points - self.smoothed)
+            speed = np.linalg.norm(self.dx_hat, axis=speed_axis, keepdims=True)
+
+        cutoff = self.min_cutoff + self.beta * speed
+        tau = 1.0 / (2.0 * math.pi * np.maximum(cutoff, EPSILON))
+        a = 1.0 / (1.0 + tau / dt)
+        self.smoothed = self.smoothed + a * (x - self.smoothed)
         return self.smoothed.copy()
 
     def reset(self) -> None:
         self.smoothed = None
+        self.dx_hat = None
+
+
+_EXPR_KEYS: Tuple[str, ...] = (
+    "blink_left", "blink_right", "smile", "mouth_open",
+    "brow_raise_left", "brow_raise_right", "yaw", "roll",
+)
+
+
+@dataclass
+class ExpressionState:
+    """One-Euro smoother over the named expression coefficient dict.
+    Slightly slower min_cutoff than the landmark filter so blink/lip
+    coefficients don't pop on single-frame MediaPipe noise."""
+    filter: OneEuroFilter = field(default_factory=lambda: OneEuroFilter(
+        min_cutoff=1.3, beta=0.020, d_cutoff=1.0,
+    ))
+
+    def smooth(self, current: Dict[str, float], dt: Optional[float] = None) -> Dict[str, float]:
+        values = np.array([float(current.get(k, 0.0)) for k in _EXPR_KEYS], dtype=np.float32)
+        smoothed = self.filter.update(values, dt=dt)
+        return {k: float(smoothed[i]) for i, k in enumerate(_EXPR_KEYS)}
+
+
+@dataclass
+class LandmarkSmoother:
+    """One-Euro filter on the full 478×2 landmark array. Per-landmark
+    velocity drives per-landmark cutoff, so lips/eyes track fast
+    expression changes while forehead/cheek landmarks stay rock-stable.
+
+    beta=0.05 is tuned for face landmarks at typical 25-30 fps video:
+    head pans / quick turns keep the mask within ~3 px of truth, while
+    a still face has < 1 px of frame-to-frame jitter.
+    """
+    filter: OneEuroFilter = field(default_factory=lambda: OneEuroFilter(
+        min_cutoff=1.7, beta=0.05, d_cutoff=1.0,
+    ))
+
+    def update(self, points: np.ndarray, dt: Optional[float] = None) -> np.ndarray:
+        return self.filter.update(points, dt=dt, speed_axis=1)
+
+    def reset(self) -> None:
+        self.filter.reset()
 
 
 @dataclass
@@ -186,6 +256,38 @@ def analysis_min_detection_confidence() -> float:
     )
 
 
+def process_min_detection_confidence() -> float:
+    return clamp(
+        env_float("CARTOON_PROCESS_MIN_DETECTION_CONFIDENCE", DEFAULT_PROCESS_MIN_DETECTION_CONFIDENCE),
+        0.05,
+        0.95,
+    )
+
+
+def process_min_tracking_confidence() -> float:
+    return clamp(
+        env_float("CARTOON_PROCESS_MIN_TRACKING_CONFIDENCE", DEFAULT_PROCESS_MIN_TRACKING_CONFIDENCE),
+        0.05,
+        0.95,
+    )
+
+
+def process_hold_frames() -> int:
+    return max(0, env_int("CARTOON_PROCESS_HOLD_FRAMES", DEFAULT_PROCESS_HOLD_FRAMES))
+
+
+def process_initial_confirm_frames() -> int:
+    return max(1, env_int("CARTOON_PROCESS_INITIAL_CONFIRM_FRAMES", DEFAULT_PROCESS_INITIAL_CONFIRM_FRAMES))
+
+
+def face_detection_padding_ratio() -> float:
+    return clamp(
+        env_float("CARTOON_FACE_DETECTION_PADDING_RATIO", DEFAULT_FACE_DETECTION_PADDING_RATIO),
+        0.0,
+        0.25,
+    )
+
+
 def remap(value: float, source_min: float, source_max: float) -> float:
     return clamp((value - source_min) / max(source_max - source_min, EPSILON), 0.0, 1.0)
 
@@ -224,13 +326,66 @@ def download_file(url: str, destination: str) -> None:
             return
 
 
+def probe_video_bitrate(path: str) -> Optional[int]:
+    """Read the source video's bitrate via ffprobe so the encode can target
+    the same data rate. Returns None when ffprobe is missing or the source
+    stream has no declared bitrate (some mp4 containers omit it).
+
+    Falls back to (file_size / duration * 8) as a sanity estimate when the
+    stream tag is absent — that's how most players display 'bitrate' anyway.
+    """
+    try:
+        stream_out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=bit_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            text=True,
+            timeout=15,
+        ).strip()
+        if stream_out and stream_out.isdigit():
+            return int(stream_out)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    try:
+        duration_out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            text=True,
+            timeout=15,
+        ).strip()
+        duration = float(duration_out) if duration_out else 0.0
+        if duration > 0.5:
+            return int((os.path.getsize(path) * 8) / duration)
+    except (subprocess.SubprocessError, FileNotFoundError, ValueError):
+        pass
+    return None
+
+
 def landmark_to_point(landmark, width: int, height: int) -> np.ndarray:
     return np.array([landmark.x * width, landmark.y * height], dtype=np.float32)
 
 
-def landmarks_to_points(face_landmarks, width: int, height: int) -> np.ndarray:
+def landmarks_to_points(
+    face_landmarks,
+    width: int,
+    height: int,
+    offset_x: float = 0.0,
+    offset_y: float = 0.0,
+) -> np.ndarray:
     return np.array(
-        [landmark_to_point(landmark, width, height) for landmark in face_landmarks.landmark],
+        [
+            landmark_to_point(landmark, width, height) - np.array([offset_x, offset_y], dtype=np.float32)
+            for landmark in face_landmarks.landmark
+        ],
         dtype=np.float32,
     )
 
@@ -297,10 +452,18 @@ def compute_face_descriptor(frame: np.ndarray, points: np.ndarray, box: Tuple[in
     face_height = max(float(np.linalg.norm(points[152] - points[10])), 1.0)
     face_center = (points[10] + points[152] + points[234] + points[454]) * 0.25
 
-    geometry = points[DESCRIPTOR_KEYPOINTS].copy()
-    geometry[:, 0] = (geometry[:, 0] - face_center[0]) / face_width
-    geometry[:, 1] = (geometry[:, 1] - face_center[1]) / face_height
-    geometry_descriptor = geometry.flatten()
+    # Project keypoints into the face's *local* x/y frame, not the image's
+    # axes. Previously a 30° head roll changed the descriptor as much as a
+    # different person — profile matching then failed and the filter dropped
+    # off mid-tilt. Local-axis projection makes the descriptor rotation-
+    # invariant: same face → same descriptor at any roll angle.
+    x_axis = (points[454] - points[234]).astype(np.float32) / face_width
+    y_axis = np.array([-x_axis[1], x_axis[0]], dtype=np.float32)
+
+    centered = (points[DESCRIPTOR_KEYPOINTS] - face_center).astype(np.float32)
+    local_x = (centered * x_axis).sum(axis=1) / face_width
+    local_y = (centered * y_axis).sum(axis=1) / face_height
+    geometry_descriptor = np.stack([local_x, local_y], axis=1).flatten()
 
     crop = crop_box(frame, box)
     if crop.size == 0:
@@ -329,7 +492,22 @@ def create_face_thumbnail(frame: np.ndarray, box: Tuple[int, int, int, int]) -> 
 
 
 def detect_faces(face_mesh, frame: np.ndarray, tuning: ExpressionTuning, with_thumbnails: bool = False) -> List[FaceDetection]:
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_height, frame_width = frame.shape[:2]
+    pad_ratio = face_detection_padding_ratio()
+    pad_x = int(round(frame_width * pad_ratio))
+    pad_y = int(round(frame_height * pad_ratio))
+    detect_frame = frame
+    if pad_x > 0 or pad_y > 0:
+        detect_frame = cv2.copyMakeBorder(
+            frame,
+            pad_y,
+            pad_y,
+            pad_x,
+            pad_x,
+            cv2.BORDER_REPLICATE,
+        )
+
+    rgb_frame = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2RGB)
     results = face_mesh.process(rgb_frame)
     detections: List[FaceDetection] = []
 
@@ -337,7 +515,7 @@ def detect_faces(face_mesh, frame: np.ndarray, tuning: ExpressionTuning, with_th
         return detections
 
     for face_landmarks in results.multi_face_landmarks[: tuning.max_num_faces]:
-        points = landmarks_to_points(face_landmarks, frame.shape[1], frame.shape[0])
+        points = landmarks_to_points(face_landmarks, detect_frame.shape[1], detect_frame.shape[0], pad_x, pad_y)
         box = bbox_from_points(points, frame.shape)
         center = np.array([(box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5], dtype=np.float32)
         size = float(max(box[2] - box[0], box[3] - box[1]))
@@ -389,6 +567,40 @@ def face_match_cost(detection: FaceDetection, profile: FaceProfile, frame_shape:
     return descriptor_cost * 0.78 + center_cost * 2.2 + size_cost * 0.25
 
 
+def _profile_is_sticky(profile: FaceProfile, frame_index: int) -> bool:
+    """True when the profile was seen within the last few frames — large
+    inter-frame motion (zoom, fast pan) shouldn't break tracking on a
+    face that was just here."""
+    return profile.last_seen_frame >= 0 and (frame_index - profile.last_seen_frame) <= process_hold_frames()
+
+
+def is_plausible_profile_detection(
+    detection: FaceDetection,
+    profile: FaceProfile,
+    frame_shape: Tuple[int, int, int],
+    frame_index: int,
+) -> bool:
+    if _profile_is_sticky(profile, frame_index):
+        return True
+
+    descriptor_cost = float(np.linalg.norm(detection.descriptor - profile.descriptor))
+    if profile.last_seen_frame < 0:
+        if profile.center is None or profile.size <= 0:
+            return descriptor_cost <= 0.55
+
+        diagonal = max(float(np.linalg.norm(np.array([frame_shape[1], frame_shape[0]], dtype=np.float32))), 1.0)
+        center_distance = float(np.linalg.norm(detection.center - profile.center))
+        max_center_distance = max(profile.size * 1.0, detection.size * 0.9, diagonal * 0.08)
+        size_log_ratio = abs(math.log((detection.size + EPSILON) / (profile.size + EPSILON)))
+        return (
+            descriptor_cost <= 0.68
+            and center_distance <= max_center_distance
+            and size_log_ratio <= 0.55
+        )
+
+    return descriptor_cost <= 1.0
+
+
 def assign_detections_to_profiles(
     detections: List[FaceDetection],
     profiles: List[FaceProfile],
@@ -399,11 +611,24 @@ def assign_detections_to_profiles(
     if not detections or not profiles:
         return [], list(range(len(detections))), list(range(len(profiles)))
 
+    # 1-detection / 1-profile shortcut is allowed only while the assigned
+    # profile is already hot. Before the first real match, background false
+    # positives must pass the stricter descriptor/position gate below.
+    if len(detections) == 1 and len(profiles) == 1 and _profile_is_sticky(profiles[0], frame_index):
+        return [(0, 0)], [], []
+
     candidates: List[Tuple[float, int, int]] = []
     for detection_index, detection in enumerate(detections):
         for profile_index, profile in enumerate(profiles):
+            if not is_plausible_profile_detection(detection, profile, frame_shape, frame_index):
+                continue
             cost = face_match_cost(detection, profile, frame_shape, frame_index)
-            if cost <= threshold:
+            # Sticky: a profile seen in the last few frames keeps its
+            # detection across large inter-frame motion (zoom, fast pan,
+            # brief occlusion) instead of being unmatched and triggering
+            # a filter swap.
+            effective_threshold = threshold * (1.7 if _profile_is_sticky(profile, frame_index) else 1.0)
+            if cost <= effective_threshold:
                 candidates.append((cost, detection_index, profile_index))
 
     candidates.sort(key=lambda item: item[0])
@@ -418,6 +643,30 @@ def assign_detections_to_profiles(
         used_detections.add(detection_index)
         used_profiles.add(profile_index)
         matches.append((detection_index, profile_index))
+
+    # When the number of unmatched detections equals the number of
+    # unmatched profiles AND at least one of those profiles is sticky,
+    # pair them nearest-by-center. This rescues tracking after a large
+    # head jump that pushes cost over the threshold for every pair.
+    unmatched_dets_indices = [i for i in range(len(detections)) if i not in used_detections]
+    unmatched_profs_indices = [i for i in range(len(profiles)) if i not in used_profiles]
+    if (
+        unmatched_dets_indices
+        and len(unmatched_dets_indices) == len(unmatched_profs_indices)
+        and any(_profile_is_sticky(profiles[i], frame_index) for i in unmatched_profs_indices)
+    ):
+        rescue: List[Tuple[float, int, int]] = []
+        for det_i in unmatched_dets_indices:
+            for prof_i in unmatched_profs_indices:
+                center_dist = float(np.linalg.norm(detections[det_i].center - (profiles[prof_i].center if profiles[prof_i].center is not None else detections[det_i].center)))
+                rescue.append((center_dist, det_i, prof_i))
+        rescue.sort(key=lambda item: item[0])
+        for _, det_i, prof_i in rescue:
+            if det_i in used_detections or prof_i in used_profiles:
+                continue
+            used_detections.add(det_i)
+            used_profiles.add(prof_i)
+            matches.append((det_i, prof_i))
 
     unmatched_detections = [index for index in range(len(detections)) if index not in used_detections]
     unmatched_profiles = [index for index in range(len(profiles)) if index not in used_profiles]
@@ -1029,13 +1278,13 @@ def _composite_filter(
     hard_mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillConvexPoly(hard_mask, cv2.convexHull(oval_pts), 255)
 
-    # Feather radius: 3 % of face width (tight edge — wide fade caused chin bleed-through)
+    # Wider feather (~7% of face width) gives the Snap-style soft fade that
+    # dissolves the filter edge into surrounding skin instead of leaving a
+    # visible sticker boundary.
     face_w = float(np.linalg.norm(face_points[454] - face_points[234]))
-    feather_px = max(4, int(face_w * 0.03))
+    feather_px = max(8, int(face_w * 0.07))
 
-    # Soft edge: small erosion + narrow Gaussian so the filter is opaque across
-    # most of the face and only fades in the last few pixels at the boundary.
-    erode_k = max(1, feather_px // 2)
+    erode_k = max(2, feather_px // 2)
     inner = cv2.erode(hard_mask, np.ones((erode_k * 2 + 1, erode_k * 2 + 1), np.uint8))
     soft = cv2.GaussianBlur(inner.astype(np.float32), (0, 0), sigmaX=float(feather_px))
     if soft.max() > 0:
@@ -1043,21 +1292,38 @@ def _composite_filter(
     soft = np.clip(soft, 0.0, 1.0)
 
     filter_alpha = warped_canvas[:, :, 3].astype(np.float32) / 255.0
-    src_bgr = warped_canvas[:, :, :3].astype(np.float32)
+    src_bgr_u8 = warped_canvas[:, :, :3]
+    src_bgr = src_bgr_u8.astype(np.float32)
     dst = frame.astype(np.float32)
 
-    # Luminance matching: scale filter brightness to the face's ambient light.
-    # This makes a cartoon filter look like it belongs in the same scene.
+    # Lighting harmonization: match L (brightness), then nudge a/b (chroma)
+    # toward the face's color cast so a cool cartoon under warm tungsten
+    # picks up warmth and stops reading as a sticker.
     face_px = hard_mask > 127
     w_sum = float(filter_alpha[face_px].sum())
     if face_px.any() and w_sum > 200:
-        dst_l = cv2.cvtColor(frame, cv2.COLOR_BGR2Lab)[:, :, 0].astype(np.float32)
-        src_l = cv2.cvtColor(warped_canvas[:, :, :3], cv2.COLOR_BGR2Lab)[:, :, 0].astype(np.float32)
-        ref_lum = float(dst_l[face_px].mean())
-        src_lum = float((src_l[face_px] * filter_alpha[face_px]).sum() / w_sum)
-        if src_lum > 5.0:
-            lum_scale = float(np.clip(ref_lum / src_lum, 0.5, 1.8))
-            src_bgr = np.clip(src_bgr * lum_scale, 0.0, 255.0)
+        dst_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2Lab).astype(np.float32)
+        src_lab = cv2.cvtColor(src_bgr_u8, cv2.COLOR_BGR2Lab).astype(np.float32)
+        weights = filter_alpha[face_px]
+
+        ref_L = float(dst_lab[face_px, 0].mean())
+        ref_a = float(dst_lab[face_px, 1].mean())
+        ref_b = float(dst_lab[face_px, 2].mean())
+        src_L = float((src_lab[face_px, 0] * weights).sum() / w_sum)
+        src_a = float((src_lab[face_px, 1] * weights).sum() / w_sum)
+        src_b = float((src_lab[face_px, 2] * weights).sum() / w_sum)
+
+        if src_L > 5.0:
+            lum_scale = float(np.clip(ref_L / src_L, 0.7, 1.4))
+            src_lab[:, :, 0] = np.clip(src_lab[:, :, 0] * lum_scale, 0, 255)
+
+        # 35% pull toward face chroma — subtle enough that a green-skinned
+        # cartoon stays green, strong enough that color cast carries over.
+        chroma_pull = 0.35
+        src_lab[:, :, 1] = np.clip(src_lab[:, :, 1] + (ref_a - src_a) * chroma_pull, 0, 255)
+        src_lab[:, :, 2] = np.clip(src_lab[:, :, 2] + (ref_b - src_b) * chroma_pull, 0, 255)
+
+        src_bgr = cv2.cvtColor(src_lab.clip(0, 255).astype(np.uint8), cv2.COLOR_Lab2BGR).astype(np.float32)
 
     # Build final per-pixel blend alpha:
     #   inside oval  → filter alpha × soft feather (fades at skin boundary)
@@ -1149,16 +1415,25 @@ def _warp_perspective_to_canvas(
     h, w = frame_shape[:2]
     th, tw = texture.shape[:2]
 
-    face_w = float(np.linalg.norm(points[454] - points[234]))
-    face_h = float(np.linalg.norm(points[152] - points[10]))
+    # Averaged anchor clusters: jitter on any single landmark gets diluted
+    # across 4-6 neighbours, so the warp footprint stays steady frame to
+    # frame. The clusters are picked along the face oval so they still
+    # rotate/scale with head pose.
+    forehead = np.mean(points[[10, 109, 338, 67, 297, 151]], axis=0)
+    chin = np.mean(points[[152, 175, 396, 369, 199, 140]], axis=0)
+    right_cheek = np.mean(points[[234, 127, 162, 21, 54]], axis=0)
+    left_cheek = np.mean(points[[454, 356, 389, 251, 284]], axis=0)
+
+    face_w = float(np.linalg.norm(left_cheek - right_cheek))
+    face_h = float(np.linalg.norm(chin - forehead))
     if face_w < 4 or face_h < 4:
         return np.zeros((h, w, 4), dtype=np.uint8)
 
-    right = (points[454] - points[234]) / face_w
-    down  = (points[152] - points[10])  / face_h
+    right = (left_cheek - right_cheek) / face_w
+    down  = (chin - forehead)  / face_h
 
-    top_mid    = points[10]  - down  * face_h * top_scale
-    bottom_mid = points[152] + down  * face_h * bottom_scale
+    top_mid    = forehead - down  * face_h * top_scale
+    bottom_mid = chin     + down  * face_h * bottom_scale
 
     tl = top_mid    - right * face_w * side_scale_top
     tr = top_mid    + right * face_w * side_scale_top
@@ -1194,19 +1469,45 @@ def _apply_expression_transparency(
     result = canvas.copy()
     alpha = result[:, :, 3].astype(np.float32)
 
-    def fade_region(indices: List[int], strength: float, sigma: float = 7.0) -> None:
+    # Face-size aware dilation/feather so the hole stays sized correctly at
+    # any zoom level. Previously a fixed-sigma Gaussian-and-divide-by-255
+    # produced a hole that only fades the filter by ~70% on small/zoomed-out
+    # faces because the blur diffused the peak below 255 — drawn-on cartoon
+    # eyes then visibly stayed put while the user blinked.
+    face_size = float(np.linalg.norm(dst[454] - dst[234])) if dst.shape[0] > 454 else 200.0
+    base = max(face_size, 80.0)
+
+    def fade_region(indices: List[int], strength: float,
+                    dilate_frac: float, feather_frac: float) -> None:
         pts = np.int32(dst[indices])
-        region = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillConvexPoly(region, cv2.convexHull(pts), 255)
-        soft = cv2.GaussianBlur(region.astype(np.float32), (0, 0), sigmaX=sigma) / 255.0
+        hard = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(hard, cv2.convexHull(pts), 255)
+        dilate_px = max(1, int(base * dilate_frac))
+        kernel = np.ones((dilate_px * 2 + 1, dilate_px * 2 + 1), np.uint8)
+        dilated = cv2.dilate(hard, kernel)
+        feather_px = max(1, int(base * feather_frac))
+        soft = cv2.GaussianBlur(dilated.astype(np.float32), (0, 0), sigmaX=feather_px)
+        if soft.max() > 0:
+            soft = np.minimum(soft / soft.max(), 1.0)
         np.multiply(alpha, 1.0 - soft * strength, out=alpha)
 
     if reveal_eyes:
-        fade_region(LEFT_EYE_FULL, 1.0, sigma=9.0)
-        fade_region(RIGHT_EYE_FULL, 1.0, sigma=9.0)
+        # strength 0.82 leaves a faint layer of filter art over the real eye
+        # instead of a stark cutout — the blink reads as the filter's eye
+        # closing rather than a sudden hole appearing. Eye opening landmarks
+        # only (no brow), so the filter's eyebrow art still survives.
+        fade_region(_LEFT_EYE_OPENING, 0.82, dilate_frac=0.025, feather_frac=0.045)
+        fade_region(_RIGHT_EYE_OPENING, 0.82, dilate_frac=0.025, feather_frac=0.045)
 
     if reveal_mouth:
-        fade_region(MOUTH_OUTER + MOUTH_INNER, 1.0, sigma=10.0)
+        # Mouth gets a full reveal (strength=1.0) — the user's real lips
+        # are the most expressive feature and previously got hidden under
+        # the filter's residual ~12% alpha. The wider dilation (4%) also
+        # clears cartoon-lip art that's drawn larger than the real mouth,
+        # so the entire mouth region is the user's own lips. Eyes stay
+        # soft (0.82) because a stark eye-hole reads as "forceful blink";
+        # the lips don't have that problem since they're always moving.
+        fade_region(MOUTH_OUTER + MOUTH_INNER, 1.0, dilate_frac=0.040, feather_frac=0.035)
 
     result[:, :, 3] = alpha.clip(0, 255).astype(np.uint8)
     return result
@@ -1811,6 +2112,22 @@ def profiles_from_detected_faces(detected_faces: List[Dict[str, object]]) -> Lis
     return profiles
 
 
+def seed_profile_positions(
+    profiles: List[FaceProfile],
+    detected_faces: List[Dict[str, object]],
+    frame_shape: Tuple[int, int, int],
+) -> None:
+    faces_by_id = {str(face.get("faceId") or ""): face for face in detected_faces}
+    for profile in profiles:
+        representative_box = faces_by_id.get(profile.face_id, {}).get("representativeBox")
+        if not isinstance(representative_box, dict):
+            continue
+        box = denormalize_box(representative_box, frame_shape)
+        profile.center = np.array([(box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5], dtype=np.float32)
+        profile.size = float(max(box[2] - box[0], box[3] - box[1]))
+        profile.representative_box = representative_box.copy()
+
+
 def process_video(video_url: str, detected_faces: List[Dict[str, object]], filter_assignments: List[Dict[str, str]]) -> str:
     if not filter_assignments:
         raise ValueError("At least one filter assignment is required")
@@ -1819,77 +2136,194 @@ def process_video(video_url: str, detected_faces: List[Dict[str, object]], filte
 
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = os.path.join(tmpdir, "input.mp4")
-        silent_output_path = os.path.join(tmpdir, "processed-silent.mp4")
         final_output_path = os.path.join(tmpdir, "processed-final.mp4")
         download_file(video_url, input_path)
 
         styles_by_face = load_styles_for_assignments(filter_assignments, tmpdir)
         profiles = profiles_from_detected_faces(detected_faces)
+        if not profiles:
+            raise ValueError("No usable analyzed face profiles were provided. Analyze the video again before processing.")
 
         capture = cv2.VideoCapture(input_path)
         if not capture.isOpened():
             raise ValueError("Input video could not be opened")
 
         fps = capture.get(cv2.CAP_PROP_FPS) or 25.0
+        frame_dt = 1.0 / max(float(fps), 1.0)
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        writer = cv2.VideoWriter(silent_output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+        seed_profile_positions(profiles, detected_faces, (height, width, 3))
+
+        # Single-pass encode: pipe raw BGR frames straight to ffmpeg and
+        # mux the original audio in the same invocation. The old pipeline
+        # wrote an OpenCV mp4v intermediate (visibly faded colors, blocky
+        # detail) and re-encoded that with libx264 — two lossy passes for
+        # no benefit. Now: zero intermediate, one h264 encode that matches
+        # the source's bitrate; audio copied bit-exact.
+        source_bitrate = probe_video_bitrate(input_path)
+        video_rate_args: List[str] = []
+        if source_bitrate and source_bitrate > 200_000:  # ignore implausible ffprobe values
+            # Constrained-VBR targeting the source bitrate keeps file size
+            # very close to the input while leaving the encoder headroom for
+            # complex frames. crf=12 acts as a quality floor so simple frames
+            # don't waste bits hitting a target that's higher than needed.
+            video_rate_args = [
+                "-b:v", str(source_bitrate),
+                "-maxrate", str(int(source_bitrate * 1.4)),
+                "-bufsize", str(int(source_bitrate * 2.0)),
+                "-crf", "12",
+            ]
+        else:
+            # Source bitrate unknown — use a very high-quality CRF. crf=12
+            # is nearly indistinguishable from the source on typical content.
+            video_rate_args = ["-crf", "12"]
+
+        ffmpeg_proc = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel", "error",
+                # Raw frame input on stdin
+                "-f", "rawvideo",
+                "-vcodec", "rawvideo",
+                "-pix_fmt", "bgr24",
+                "-s", f"{width}x{height}",
+                "-r", f"{fps:.6f}",
+                "-i", "-",
+                # Original file as second input (audio source)
+                "-i", input_path,
+                "-map", "0:v:0",
+                "-map", "1:a:0?",
+                "-c:v", "libx264",
+                "-preset", "slow",
+                *video_rate_args,
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-c:a", "copy",
+                "-shortest",
+                final_output_path,
+            ],
+            stdin=subprocess.PIPE,
+        )
 
         expression_states: Dict[str, ExpressionState] = {face_id: ExpressionState() for face_id in styles_by_face}
         landmark_smoothers: Dict[str, LandmarkSmoother] = {}
-        fallback_smoothers: List[LandmarkSmoother] = []
-        fallback_expr_states: List[ExpressionState] = []
-        fallback_style = styles_by_face[filter_assignments[0]["faceId"]] if len(filter_assignments) == 1 else None
+        last_render_points: Dict[str, np.ndarray] = {}
+        last_render_coefficients: Dict[str, Dict[str, float]] = {}
+        initial_match_counts: Dict[str, int] = {}
+        pending_initial_matches: Dict[str, List[Tuple[int, FaceDetection]]] = {}
+        output_buffer: Dict[int, np.ndarray] = {}
+        confirm_frames = process_initial_confirm_frames()
         frame_counter = 0
+        next_emit_frame = 0
 
+        def render_detection_for_profile(profile: FaceProfile, detection: FaceDetection, target_frame_index: int) -> bool:
+            style = styles_by_face.get(profile.face_id)
+            target_frame = output_buffer.get(target_frame_index)
+            if not style or target_frame is None:
+                return False
+
+            smoother = landmark_smoothers.setdefault(profile.face_id, LandmarkSmoother())
+            if profile.last_seen_frame >= 0 and target_frame_index - profile.last_seen_frame > 10:
+                smoother.reset()
+                expression_states[profile.face_id] = ExpressionState()
+            update_profile(profile, detection, target_frame_index)
+            smoothed_points = smoother.update(detection.points, dt=frame_dt)
+
+            raw_coeff = extract_expression_coefficients(smoothed_points, tuning)
+            coefficients = expression_states[profile.face_id].smooth(raw_coeff, dt=frame_dt)
+            output_buffer[target_frame_index] = render_cartoon_face(target_frame, smoothed_points, style, coefficients)
+            last_render_points[profile.face_id] = smoothed_points.copy()
+            last_render_coefficients[profile.face_id] = coefficients.copy()
+            return True
+
+        def emit_ready_frames(max_frame_index: int) -> None:
+            nonlocal next_emit_frame
+            while next_emit_frame <= max_frame_index:
+                frame_to_write = output_buffer.pop(next_emit_frame, None)
+                if frame_to_write is None:
+                    break
+                if not frame_to_write.flags["C_CONTIGUOUS"]:
+                    frame_to_write = np.ascontiguousarray(frame_to_write)
+                ffmpeg_proc.stdin.write(frame_to_write.tobytes())
+                next_emit_frame += 1
+
+        # Tolerant thresholds and padded detection help when a face is clipped
+        # by the frame edge or the user looks down. Rendering still requires a
+        # current detection matched to an assigned analyzed face. The output is
+        # delayed by the confirmation window, so first-time real matches can be
+        # rendered retroactively while background false positives remain raw.
         with mp_face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=tuning.max_num_faces,
             refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_detection_confidence=process_min_detection_confidence(),
+            min_tracking_confidence=process_min_tracking_confidence(),
         ) as face_mesh:
             while True:
                 success, frame = capture.read()
                 if not success:
                     break
 
+                output_buffer[frame_counter] = frame
                 detections = detect_faces(face_mesh, frame, tuning, with_thumbnails=False)
 
-                if profiles:
-                    matches, _, _ = assign_detections_to_profiles(detections, profiles, frame.shape, frame_counter, threshold=1.05)
-                    for detection_index, profile_index in matches:
-                        detection = detections[detection_index]
-                        profile = profiles[profile_index]
-                        style = styles_by_face.get(profile.face_id)
-                        if not style:
+                matches, _, unmatched_profile_indices = assign_detections_to_profiles(detections, profiles, frame.shape, frame_counter, threshold=1.2)
+                matched_face_ids = set()
+                rendered_face_ids = set()
+                for detection_index, profile_index in matches:
+                    detection = detections[detection_index]
+                    profile = profiles[profile_index]
+                    matched_face_ids.add(profile.face_id)
+
+                    if profile.last_seen_frame < 0:
+                        pending = pending_initial_matches.setdefault(profile.face_id, [])
+                        pending.append((frame_counter, detection))
+                        initial_match_counts[profile.face_id] = len(pending)
+                        if len(pending) < confirm_frames:
                             continue
+                        for pending_frame_index, pending_detection in pending:
+                            if render_detection_for_profile(profile, pending_detection, pending_frame_index):
+                                rendered_face_ids.add(profile.face_id)
+                        pending_initial_matches.pop(profile.face_id, None)
+                        initial_match_counts[profile.face_id] = confirm_frames
+                        continue
 
-                        smoother = landmark_smoothers.setdefault(profile.face_id, LandmarkSmoother())
-                        if profile.last_seen_frame >= 0 and frame_counter - profile.last_seen_frame > 10:
-                            smoother.reset()
-                        update_profile(profile, detection, frame_counter)
-                        smoothed_points = smoother.update(detection.points, tuning.smoothing_alpha)
+                    if render_detection_for_profile(profile, detection, frame_counter):
+                        rendered_face_ids.add(profile.face_id)
 
-                        raw_coeff = extract_expression_coefficients(smoothed_points, tuning)
-                        coefficients = expression_states[profile.face_id].smooth(raw_coeff, tuning.smoothing_alpha)
-                        frame = render_cartoon_face(frame, smoothed_points, style, coefficients)
-                elif fallback_style:
-                    for idx, detection in enumerate(detections):
-                        while len(fallback_smoothers) <= idx:
-                            fallback_smoothers.append(LandmarkSmoother())
-                            fallback_expr_states.append(ExpressionState())
-                        smoothed_points = fallback_smoothers[idx].update(detection.points, tuning.smoothing_alpha)
-                        raw_coeff = extract_expression_coefficients(smoothed_points, tuning)
-                        coefficients = fallback_expr_states[idx].smooth(raw_coeff, tuning.smoothing_alpha)
-                        frame = render_cartoon_face(frame, smoothed_points, fallback_style, coefficients)
+                for profile in profiles:
+                    if profile.last_seen_frame < 0 and profile.face_id not in matched_face_ids:
+                        initial_match_counts[profile.face_id] = 0
+                        pending_initial_matches.pop(profile.face_id, None)
 
-                writer.write(frame)
+                hold_limit = process_hold_frames()
+                if hold_limit > 0:
+                    for profile_index in unmatched_profile_indices:
+                        profile = profiles[profile_index]
+                        if profile.face_id in rendered_face_ids:
+                            continue
+                        style = styles_by_face.get(profile.face_id)
+                        held_points = last_render_points.get(profile.face_id)
+                        if not style or held_points is None or profile.last_seen_frame < 0:
+                            continue
+                        if frame_counter - profile.last_seen_frame > hold_limit:
+                            continue
+                        coefficients = last_render_coefficients.get(profile.face_id)
+                        if coefficients is None:
+                            coefficients = extract_expression_coefficients(held_points, tuning)
+                        output_buffer[frame_counter] = render_cartoon_face(output_buffer[frame_counter], held_points, style, coefficients)
+
+                emit_ready_frames(frame_counter - confirm_frames)
                 frame_counter += 1
 
+        emit_ready_frames(frame_counter - 1)
         capture.release()
-        writer.release()
-        mux_original_audio(input_path, silent_output_path, final_output_path)
+        ffmpeg_proc.stdin.close()
+        return_code = ffmpeg_proc.wait()
+        if return_code != 0:
+            raise RuntimeError(f"ffmpeg exited with status {return_code}")
 
         preserved_output = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         preserved_output.close()

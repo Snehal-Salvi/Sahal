@@ -28,7 +28,7 @@ export function useVideoProcessor() {
   const [analysis, setAnalysis] = useState(null);
   const [selectedFaceId, setSelectedFaceId] = useState("");
   const [faceSelections, setFaceSelections] = useState({});
-  const [applySameFilterToAll, setApplySameFilterToAll] = useState(false);
+  const [applySameFilterToAll, setApplySameFilterToAll] = useState(true);
   const [sharedFilterId, setSharedFilterId] = useState("");
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
@@ -111,7 +111,7 @@ export function useVideoProcessor() {
   function resetSelections(nextFaces = []) {
     setFaceSelections({});
     setSharedFilterId("");
-    setApplySameFilterToAll(false);
+    setApplySameFilterToAll(true);
     setSelectedFaceId(nextFaces[0]?.faceId || "");
   }
 

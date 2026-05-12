@@ -74,6 +74,9 @@ Optional AI-service tuning in `ai-service/.env`:
 - `CARTOON_ANALYSIS_SAMPLE_FRAMES`: number of frames sampled for initial face detection, default `8`
 - `CARTOON_ANALYSIS_DETECT_WIDTH`: max frame width sent to MediaPipe during analysis, default `720`
 - `CARTOON_ANALYSIS_MIN_DETECTION_CONFIDENCE`: initial detection threshold, default `0.35`
+- `CARTOON_PROCESS_MAX_WIDTH`: optional max output width while creating the final video, default `0` keeps original width
+- `CARTOON_PROCESS_MAX_FPS`: optional max output frames per second while creating the final video, default `0` keeps original frame rate
+- `CARTOON_PROCESS_REFINE_LANDMARKS`: enable extra face detail tracking during final video creation, default `false`
 
 8. Start the frontend:
 

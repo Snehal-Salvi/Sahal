@@ -9,8 +9,8 @@
   border-right: 1px solid rgba(244,114,182,0.08);
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 34px 42px;
+  gap: 12px;
+  padding: 22px 42px 28px;
   overflow-y: auto;
 }
 
@@ -32,19 +32,19 @@
 }
 
 .spin {
-  width: 68px;
-  height: 68px;
+  width: 54px;
+  height: 54px;
   border-radius: 50%;
   border: 3px solid rgba(244,114,182,0.12);
   border-top-color: #f472b6;
   animation: spin 1.2s linear infinite;
   position: relative;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 
 .spin-in {
-  width: 52px;
-  height: 52px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: #181818;
   color: #f472b6;
@@ -52,34 +52,34 @@
   align-items: center;
   justify-content: center;
   font-family: 'Playfair Display', serif;
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 800;
   position: absolute;
-  top: 5px;
-  left: 5px;
+  top: 4px;
+  left: 4px;
 }
 
 .proc-hero h2 {
   font-family: 'Playfair Display', serif;
-  font-size: 34px;
+  font-size: 26px;
   line-height: 1.1;
   font-weight: 700;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .proc-hero p {
   max-width: 440px;
-  font-size: 14px;
+  font-size: 13px;
   color: #7a6b73;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .proc-status {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 13px;
-  margin-bottom: 12px;
+  padding: 6px 12px;
+  margin-bottom: 10px;
   border-radius: 999px;
   background: rgba(244,114,182,0.08);
   border: 1px solid rgba(244,114,182,0.2);
@@ -107,7 +107,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 13px 14px;
+  padding: 10px 14px;
   border-bottom: 1px solid rgba(255,255,255,0.05);
 }
 
@@ -141,14 +141,14 @@
   background: #181818;
   border: 1px solid rgba(255,255,255,0.06);
   border-radius: 16px;
-  padding: 16px;
+  padding: 13px 16px;
 }
 
 .prog-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .prog-lbl { font-size: 13px; font-weight: 700; color: #fff; }

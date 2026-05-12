@@ -34,14 +34,22 @@ export default function Step1Upload({ onChooseFile, onDropFile }) {
 
   return (
     <div className="s1">
-      {/* ── Left: full logo panel ── */}
+      {/* ── Left: brand panel ── */}
       <div className="s1-left">
-        <img
-          src="/sahal-logo.png"
-          alt="Sahal"
-          className="s1-left-logo"
-          onError={(e) => { e.currentTarget.style.display = "none"; }}
-        />
+        <div className="s1-brand-lockup">
+          <div className="s1-video-orb">
+            <video
+              className="s1-left-video"
+              src="/sahal.mp4"
+              autoPlay
+              muted
+              loop
+              playsInline
+              onError={(e) => { e.currentTarget.style.display = "none"; }}
+            />
+          </div>
+          
+        </div>
       </div>
 
       {/* ── Right: upload content ── */}

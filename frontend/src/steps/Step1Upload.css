@@ -6,14 +6,77 @@
 .s1-left {
   width: 50%;
   flex-shrink: 0;
-  background: #0a0a0a;
+  background:
+    radial-gradient(circle at 50% 44%, rgba(244,114,182,0.13), transparent 34%),
+    linear-gradient(180deg, #090609 0%, #050505 100%);
   overflow: hidden;
   border-right: 1px solid rgba(244,114,182,0.08);
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.s1-left-logo {
+.s1-left::before {
+  content: '';
+  position: absolute;
+  inset: 12%;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(244,114,182,0.18), transparent 48%),
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.08), transparent 32%);
+  filter: blur(26px);
+  pointer-events: none;
+}
+.s1-brand-lockup {
+  position: relative;
+  z-index: 1;
+  width: min(68%, 500px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  isolation: isolate;
+}
+.s1-brand-lockup::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -10px;
+  width: 82%;
+  height: 30%;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at 50% 50%, rgba(244,114,182,0.22), transparent 68%);
+  filter: blur(18px);
+  z-index: -1;
+  pointer-events: none;
+}
+.s1-video-orb {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #050505;
+  border: 1px solid rgba(244,114,182,0.22);
+  box-shadow:
+    0 0 0 10px rgba(244,114,182,0.035),
+    0 24px 70px rgba(0,0,0,0.5),
+    0 0 64px rgba(244,114,182,0.18);
+}
+.s1-left-video {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  display: block;
+  opacity: 0.96;
+  background: #050505;
+}
+.s1-brand-logo {
+  width: 76%;
+  max-height: 104px;
+  margin-top: -22px;
+  object-fit: contain;
+  opacity: 0.96;
+  filter:
+    drop-shadow(0 10px 24px rgba(0,0,0,0.74))
+    drop-shadow(0 0 18px rgba(244,114,182,0.28));
 }
 
 .s1-right {
@@ -150,14 +213,15 @@
 @media (max-width: 860px) {
   .s1 { flex-direction: column; height: auto; }
   .s1-left {
-    display: block;
     width: 100%;
-    height: 45vw;
-    max-height: 320px;
-    min-height: 180px;
+    height: 48vw;
+    max-height: none;
+    min-height: 260px;
     border-right: none;
     border-bottom: 1px solid rgba(244,114,182,0.08);
   }
+  .s1-brand-lockup { width: min(56%, 400px); }
+  .s1-brand-logo { width: 78%; max-height: 86px; margin-top: -16px; }
   .s1-right {
     width: 100%;
     height: auto;
@@ -171,7 +235,9 @@
 }
 
 @media (max-width: 600px) {
-  .s1-left { height: 40vw; min-height: 160px; max-height: 240px; }
+  .s1-left { height: 56vw; min-height: 240px; }
+  .s1-brand-lockup { width: min(72%, 300px); }
+  .s1-brand-logo { width: 82%; max-height: 68px; margin-top: -12px; }
   .s1-right { padding: 24px 16px; }
   .hero h1 { font-size: 22px; }
   .hero { margin-bottom: 20px; }

@@ -3,6 +3,10 @@ import { Video } from "../models/Video.js";
 import { videoQueue } from "../queues/videoQueue.js";
 import { analyzeVideoBufferWithAI, analyzeVideoWithAI } from "../services/ai.service.js";
 import { uploadBuffer } from "../services/cloudinary.service.js";
+import {
+  compressVideoBuffer,
+  COMPRESS_THRESHOLD_BYTES,
+} from "../utils/compressVideo.js";
 
 // Tracks Cloudinary uploads still in flight after the response was sent.
 // queueVideoProcessing awaits the promise here if the user clicks Process
@@ -109,14 +113,29 @@ export async function uploadVideo(req, res) {
     return res.status(400).json({ message: "Video file is required" });
   }
 
+  // Cloudinary's free plan rejects videos > 100 MiB. Re-encode anything
+  // above ~95 MiB with ffmpeg first (h.264 CRF 28, capped 720p) so the
+  // upload still goes through without forcing the user to compress.
+  // We do this BEFORE kicking off the Cloudinary upload so the in-flight
+  // buffer the worker will eventually pull from is the compressed one.
+  let uploadBufferData = req.file.buffer;
+  if (uploadBufferData.length > COMPRESS_THRESHOLD_BYTES) {
+    console.log(
+      `[upload] source ${uploadBufferData.length} B exceeds Cloudinary limit; compressing…`
+    );
+    uploadBufferData = await compressVideoBuffer(uploadBufferData);
+    console.log(`[upload] compressed to ${uploadBufferData.length} B`);
+  }
+
   // Kick off Cloudinary upload in parallel with face analysis. The user only
   // needs the originalUrl when they click Process, so we don't block the
   // response on it — we wait on the promise later if needed.
-  const cloudinaryPromise = uploadBuffer(req.file.buffer, {
+  const cloudinaryPromise = uploadBuffer(uploadBufferData, {
     folder: "cartoon-face-filter/originals",
     resource_type: "video",
   });
 
+  // Analysis runs on the original-quality buffer for best face detection.
   const analysis = await analyzeVideoBufferWithAI({
     buffer: req.file.buffer,
     filename: req.file.originalname

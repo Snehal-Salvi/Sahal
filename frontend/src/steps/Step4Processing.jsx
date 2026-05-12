@@ -33,31 +33,31 @@ export default function Step4Processing({ analysis, filterLibrary, assignedFilte
 
         <div className="steps-card">
           <ProcessingStep
-            icon="✓" iconClass="id"
+            icon="✅" iconClass="id"
             name="Faces matched"
             desc={`${analysis?.faces?.length || 0} ${analysis?.faces?.length === 1 ? "person" : "people"} ready`}
             state="done"
           />
           <ProcessingStep
-            icon="✓" iconClass="id"
+            icon="🎭" iconClass="id"
             name="Choices saved"
             desc="Each face has its selected mask"
             state="done"
           />
           <ProcessingStep
-            icon="S" iconClass="ia"
+            icon="🎥" iconClass="ia"
             name="Adding the look"
             desc="Your masks are being placed on the right faces"
             state={isComplete ? "done" : "active"}
           />
           <ProcessingStep
-            icon="S" iconClass="ip"
+            icon="☁️" iconClass="ip"
             name="Polishing the video"
             desc="Keeping the motion smooth and the sound in place"
             state={isComplete ? "done" : "wait"}
           />
           <ProcessingStep
-            icon="S" iconClass="ip"
+            icon="⏬️" iconClass="ip"
             name="Preparing download"
             desc="Your finished video will appear on the next screen"
             state={isComplete ? "done" : "wait"}
