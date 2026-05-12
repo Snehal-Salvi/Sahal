@@ -1182,13 +1182,16 @@ def _apply_local_expressions(
         t = clamp((c - lo) / max(hi - lo, EPSILON), 0.0, 1.0)
         return t * t * (3.0 - 2.0 * t)
 
-    bl_int = smoothstep(blink_left, 0.30, 0.85)
-    br_int = smoothstep(blink_right, 0.30, 0.85)
+    # Force bilateral blinks: drive both eyes from min(L, R) so asymmetric
+    # MediaPipe noise on a single eye can't produce a phantom wink.
+    blink_sym = min(blink_left, blink_right)
+    b_int = smoothstep(blink_sym, 0.30, 0.85)
 
-    if bl_int > 0.05 and "left_eye" in regions:
-        _squash_region_v(out, regions["left_eye"], 1.0 - bl_int * 0.65)
-    if br_int > 0.05 and "right_eye" in regions:
-        _squash_region_v(out, regions["right_eye"], 1.0 - br_int * 0.65)
+    if b_int > 0.05:
+        if "left_eye" in regions:
+            _squash_region_v(out, regions["left_eye"], 1.0 - b_int * 0.65)
+        if "right_eye" in regions:
+            _squash_region_v(out, regions["right_eye"], 1.0 - b_int * 0.65)
 
     return out
 
