@@ -52,8 +52,9 @@ export function createVideoWorker() {
           processedUrl: video.processedUrl
         };
       } catch (error) {
+        console.error("[worker] processing failed", error);
         video.status = "failed";
-        video.error = error.message;
+        video.error = "Processing failed. Please try again.";
         await video.save();
         throw error;
       }

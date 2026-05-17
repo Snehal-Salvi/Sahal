@@ -3,19 +3,24 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
-    "worker": "node --watch src/worker.js",
-    "worker:start": "node src/worker.js"
+    "dev": "node --import ./src/instrument.js --watch src/server.js",
+    "start": "node --import ./src/instrument.js src/server.js",
+    "worker": "node --import ./src/instrument.js --watch src/worker.js",
+    "worker:start": "node --import ./src/instrument.js src/worker.js"
   },
   "dependencies": {
+    "@sentry/node": "^10.53.1",
     "axios": "^1.7.2",
     "bullmq": "^5.7.8",
     "cloudinary": "^2.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.5.1",
+    "google-auth-library": "^10.6.2",
+    "helmet": "^8.1.0",
     "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.3.2",
     "multer": "^1.4.5-lts.1"
   }

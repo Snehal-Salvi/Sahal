@@ -8,6 +8,7 @@ import {
   uploadOverlay,
   uploadVideo,
 } from "../api/client";
+import { getAuthToken, useAuth } from "../auth/AuthContext";
 import { pngHasAlphaChannel } from "../utils/pngValidation";
 
 function buildFaceSelectionMap(faces, faceSelections, sharedFilterId, applySameFilterToAll) {
@@ -20,6 +21,7 @@ function buildFaceSelectionMap(faces, faceSelections, sharedFilterId, applySameF
 }
 
 export function useVideoProcessor() {
+  const { requireLogin } = useAuth();
   const [step, setStep] = useState(1);
   const [videoFile, setVideoFile] = useState(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState("");
@@ -179,10 +181,21 @@ export function useVideoProcessor() {
   }
 
   function handleVideoFileChange(event) {
-    applyVideoFile(event.target.files?.[0]);
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!getAuthToken()) {
+      requireLogin(() => applyVideoFile(file));
+      return;
+    }
+    applyVideoFile(file);
   }
 
   function handleVideoFileDrop(file) {
+    if (!file) return;
+    if (!getAuthToken()) {
+      requireLogin(() => applyVideoFile(file));
+      return;
+    }
     applyVideoFile(file);
   }
 

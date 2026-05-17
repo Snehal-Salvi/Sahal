@@ -95,8 +95,93 @@
   font-size: 8px;
 }
 .step-line { width: 14px; height: 1px; background: rgba(255,255,255,0.08); flex-shrink: 0; margin-bottom: 11px; }
-.nav-av { display: none; }
+
+.nav-signin {
+  background: linear-gradient(135deg, #f472b6, #c026a0);
+  border: none;
+  color: #fff;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(244,114,182,0.3);
+}
+.nav-signin:hover { filter: brightness(1.1); }
+
+.nav-user { position: relative; flex-shrink: 0; }
+.nav-user-trigger {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #eee;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+.nav-user-trigger:hover { background: rgba(255,255,255,0.07); }
+.nav-user-avatar,
+.nav-user-avatar-fallback {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.nav-user-avatar-fallback {
+  background: linear-gradient(135deg, #f472b6, #c026a0);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 12px;
+}
+.nav-user-name { white-space: nowrap; }
+
+.nav-user-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  background: #161616;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+  padding: 8px;
+  z-index: 20;
+}
+.nav-user-info {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 6px;
+}
+.nav-user-info-name { color: #fff; font-size: 13px; font-weight: 600; }
+.nav-user-info-email { color: #888; font-size: 11px; margin-top: 2px; word-break: break-all; }
+.nav-user-action {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #f87171;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.nav-user-action:hover { background: rgba(248,113,113,0.08); }
 
 @media (max-width: 600px) {
   .step-l { display: none; }
+  .nav-user-name { display: none; }
 }

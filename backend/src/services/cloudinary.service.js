@@ -37,3 +37,12 @@ export function uploadBuffer(buffer, options = {}) {
     Readable.from(buffer).pipe(stream);
   });
 }
+
+export async function destroyAsset(publicId, resourceType = "image") {
+  if (!publicId) return;
+  try {
+    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+  } catch (err) {
+    console.error(`[cloudinary] failed to destroy ${publicId}`, err.message);
+  }
+}

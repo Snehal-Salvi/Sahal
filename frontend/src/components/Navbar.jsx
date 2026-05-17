@@ -1,4 +1,5 @@
 import "./Navbar.css";
+import UserMenu from "./UserMenu";
 
 const STEP_LABELS = ["Upload", "Detect", "Filters", "Processing", "Download"];
 
@@ -35,7 +36,7 @@ export default function Navbar({ step, goTo }) {
           return items;
         })}
       </div>
-      <div className="nav-av" />
+      <UserMenu />
     </nav>
   );
 }

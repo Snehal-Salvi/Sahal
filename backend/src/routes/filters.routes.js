@@ -6,6 +6,11 @@ import { dirname, join, extname, basename } from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const FILTERS_DIR = join(__dirname, "../../public/filters");
+const CLOUDINARY_MAP_PATH = join(FILTERS_DIR, "cloudinary-map.json");
+
+const cloudinaryMap = existsSync(CLOUDINARY_MAP_PATH)
+  ? JSON.parse(readFileSync(CLOUDINARY_MAP_PATH, "utf8"))
+  : {};
 
 const router = Router();
 
@@ -36,16 +41,17 @@ router.get("/", (req, res) => {
     return res.json([]);
   }
 
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
   const includeClassic = req.query.includeClassic === "1";
   const filters = files
     .map((filename) => {
       const manifest = readFilterManifest(filename);
+      const cloudUrl = cloudinaryMap[filename];
+      if (!cloudUrl) return null;
       return {
         id: `builtin-${filename}`,
         name: manifest.title || toDisplayName(filename),
         filename,
-        url: `${baseUrl}/filters/${filename}`,
+        url: cloudUrl,
         category: manifest.category || "Built-in filter",
         description: manifest.description || "",
         isAR: Boolean(manifest.ar_ready),
@@ -56,6 +62,7 @@ router.get("/", (req, res) => {
         revealMouth: manifest.reveal_mouth !== false
       };
     })
+    .filter(Boolean)
     .filter((filter) => includeClassic || filter.isAR)
     .sort((a, b) => Number(b.isAR) - Number(a.isAR) || a.name.localeCompare(b.name));
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import multer from "multer";
 import { Video } from "../models/Video.js";
 import { videoQueue } from "../queues/videoQueue.js";
@@ -17,6 +18,32 @@ const storage = multer.memoryStorage();
 const pngSignature = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
 ]);
+
+const ALLOWED_OVERLAY_HOSTS = new Set(
+  (process.env.OVERLAY_ALLOWED_HOSTS || "res.cloudinary.com")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+function isSafeOverlayUrl(value) {
+  if (typeof value !== "string") return false;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  // Dev-only escape hatch: allow http://localhost so the AI service can fetch
+  // built-in filters served from the backend's own /filters static route.
+  // In production this branch is disabled and only HTTPS allowlisted hosts pass.
+  if (process.env.NODE_ENV !== "production" && (host === "localhost" || host === "127.0.0.1")) {
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  }
+  if (parsed.protocol !== "https:") return false;
+  return ALLOWED_OVERLAY_HOSTS.has(host);
+}
 
 function pngHasAlphaChannel(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 33) {
@@ -71,6 +98,16 @@ const overlayFileFilter = (req, file, cb) => {
 
   cb(null, true);
 };
+
+async function findOwnedVideo(videoId, userId) {
+  if (!videoId || !videoId.match(/^[a-f0-9]{24}$/i)) {
+    return null;
+  }
+  const video = await Video.findById(videoId);
+  if (!video) return null;
+  if (String(video.ownerId) !== String(userId)) return null;
+  return video;
+}
 
 async function ensureOriginalUploadComplete(video) {
   if (video.originalUrl) {
@@ -142,6 +179,7 @@ export async function uploadVideo(req, res) {
   });
 
   const video = await Video.create({
+    ownerId: req.user.id,
     detectedFaces: (analysis.faces || []).map((face) => ({
       faceId: face.faceId,
       label: face.label,
@@ -194,7 +232,7 @@ export async function uploadOverlay(req, res) {
 
   const uploadResult = await uploadBuffer(req.file.buffer, {
     folder: "cartoon-face-filter/overlays",
-    public_id: `overlay-${Date.now()}`,
+    public_id: `overlay-${randomUUID()}`,
     resource_type: "image"
   });
 
@@ -213,7 +251,7 @@ export async function queueVideoProcessing(req, res) {
     return res.status(400).json({ message: "filterAssignments is required" });
   }
 
-  const video = await Video.findById(videoId);
+  const video = await findOwnedVideo(videoId, req.user.id);
 
   if (!video) {
     return res.status(404).json({ message: "Video not found" });
@@ -241,6 +279,16 @@ export async function queueVideoProcessing(req, res) {
   if (hasInvalidAssignment) {
     return res.status(400).json({
       message: "Each filter assignment must reference a detected face and uploaded overlay"
+    });
+  }
+
+  const hasUnsafeOverlayUrl = normalizedAssignments.some(
+    (assignment) => !isSafeOverlayUrl(assignment.overlayImageUrl)
+  );
+
+  if (hasUnsafeOverlayUrl) {
+    return res.status(400).json({
+      message: "Overlay image URL must be served from an allowed host over HTTPS"
     });
   }
 
@@ -281,7 +329,7 @@ export async function queueVideoProcessing(req, res) {
 export async function analyzeVideoFaces(req, res) {
   const { videoId } = req.params;
 
-  const video = await Video.findById(videoId);
+  const video = await findOwnedVideo(videoId, req.user.id);
   if (!video) {
     return res.status(404).json({ message: "Video not found" });
   }
@@ -311,7 +359,7 @@ export async function analyzeUploadedVideoFaces(req, res) {
     return res.status(400).json({ message: "Video file is required" });
   }
 
-  const video = await Video.findById(videoId);
+  const video = await findOwnedVideo(videoId, req.user.id);
   if (!video) {
     return res.status(404).json({ message: "Video not found" });
   }
@@ -338,7 +386,7 @@ export async function analyzeUploadedVideoFaces(req, res) {
 
 export async function getVideoStatus(req, res) {
   const { videoId } = req.params;
-  const video = await Video.findById(videoId);
+  const video = await findOwnedVideo(videoId, req.user.id);
 
   if (!video) {
     return res.status(404).json({ message: "Video not found" });

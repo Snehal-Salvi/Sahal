@@ -1,11 +1,14 @@
 import base64
+import ipaddress
 import math
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 import cv2
 import mediapipe as mp
@@ -309,15 +312,41 @@ def load_expression_tuning() -> ExpressionTuning:
     )
 
 
+def _assert_safe_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Unsupported URL scheme")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL missing host")
+    # Dev-only escape hatch: allow loopback so the AI service can fetch
+    # built-in filters from the backend running on the same machine.
+    allow_loopback = os.environ.get("ENVIRONMENT", "development").lower() != "production"
+    for info in socket.getaddrinfo(host, None):
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_loopback and allow_loopback:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise ValueError("Refusing to fetch non-public address")
+
+
 def download_file(url: str, destination: str) -> None:
     import time as _time
+    _assert_safe_url(url)
     # Cloudinary returns 423 Locked while a derived asset is still being generated.
     # Retry with backoff so the first /analyze after upload doesn't fail.
     delays = [1, 2, 4, 8, 12]
     for attempt, delay in enumerate([0, *delays]):
         if delay:
             _time.sleep(delay)
-        with requests.get(url, stream=True, timeout=300) as response:
+        with requests.get(url, stream=True, timeout=300, allow_redirects=False) as response:
             if response.status_code == 423 and attempt < len(delays):
                 continue
             response.raise_for_status()
@@ -2069,7 +2098,8 @@ def _try_fetch_filter_manifest(overlay_url: str) -> Optional[Dict[str, object]]:
     base, _, _ = overlay_url.rpartition(".")
     manifest_url = f"{base}.json"
     try:
-        response = requests.get(manifest_url, timeout=10)
+        _assert_safe_url(manifest_url)
+        response = requests.get(manifest_url, timeout=10, allow_redirects=False)
         if response.status_code != 200:
             return None
         return json.loads(response.text)

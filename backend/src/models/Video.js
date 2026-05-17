@@ -44,6 +44,12 @@ const filterAssignmentSchema = new mongoose.Schema(
 
 const videoSchema = new mongoose.Schema(
   {
+    ownerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true
+    },
     originalUrl: {
       type: String,
       default: ""

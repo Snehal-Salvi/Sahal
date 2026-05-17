@@ -9,10 +9,13 @@ import {
   uploadVideo,
   videoUpload
 } from "../controllers/video.controller.js";
+import { requireAuth } from "../middleware/requireAuth.js";
 
 const router = Router();
 const asyncHandler = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next);
+
+router.use(requireAuth);
 
 router.post("/upload", videoUpload.single("video"), asyncHandler(uploadVideo));
 router.post(

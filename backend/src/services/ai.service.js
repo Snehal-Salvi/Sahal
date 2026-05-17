@@ -1,6 +1,11 @@
 import axios from "axios";
 import FormData from "form-data";
 
+function internalAuthHeader() {
+  const secret = process.env.AI_SERVICE_SECRET;
+  return secret ? { "X-Internal-Auth": secret } : {};
+}
+
 function unwrapAIServiceError(error) {
   const responseBody = error.response?.data;
 
@@ -35,7 +40,8 @@ export async function analyzeVideoWithAI({ videoUrl }) {
         videoUrl
       },
       {
-        timeout: 0
+        timeout: 0,
+        headers: internalAuthHeader()
       }
     );
 
@@ -54,7 +60,7 @@ export async function analyzeVideoBufferWithAI({ buffer, filename }) {
       `${process.env.AI_SERVICE_URL}/analyze-upload`,
       form,
       {
-        headers: form.getHeaders(),
+        headers: { ...form.getHeaders(), ...internalAuthHeader() },
         timeout: 0,
         maxContentLength: Infinity,
         maxBodyLength: Infinity
@@ -82,7 +88,8 @@ export async function processVideoWithAI({
       },
       {
         responseType: "arraybuffer",
-        timeout: 0
+        timeout: 0,
+        headers: internalAuthHeader()
       }
     );
 
