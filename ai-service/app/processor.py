@@ -355,6 +355,73 @@ def download_file(url: str, destination: str) -> None:
             return
 
 
+def _ffprobe_int(path: str, entry: str) -> Optional[int]:
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", entry,
+                "-of", "default=nw=1:nk=1",
+                path,
+            ],
+            text=True,
+            timeout=10,
+        ).strip()
+        if not out:
+            return None
+        return int(float(out.splitlines()[0]))
+    except (subprocess.SubprocessError, FileNotFoundError, ValueError):
+        return None
+
+
+def _snap_to_90(value: int) -> int:
+    value = value % 360
+    if value < 0:
+        value += 360
+    return ((value + 45) // 90 * 90) % 360
+
+
+def probe_video_rotation(path: str) -> int:
+    """Return clockwise rotation (0/90/180/270) needed to display correctly.
+
+    Both MP4 rotation conventions (displaymatrix side_data and the legacy
+    `rotate` stream tag) ultimately report the angle that should be applied
+    clockwise to bring the stored pixels into upright display orientation
+    — once normalized into [0, 360). Phone portraits typically come out as
+    side_data=-90, which after normalization is 270° — but the actual fix
+    is a 90° CW rotation, so we use the *positive* angle of the negated
+    value. For the legacy tag the sign convention matches CW directly.
+    """
+    # Empirically, FFmpeg's displaymatrix angle is reported as the rotation
+    # already applied (in CCW degrees), so the rotation we need to undo it
+    # for upright display is its negative — for a portrait phone returning
+    # side_data=-90, we apply +90° CW. The legacy `rotate` tag is the CW
+    # angle needed for display already, so it's used as-is.
+    side_data = _ffprobe_int(path, "stream_side_data=rotation")
+    if side_data is not None:
+        result = _snap_to_90(-side_data)
+        print(f"[rotation] side_data={side_data} → rotate {result}° CW", flush=True)
+        return result
+    legacy = _ffprobe_int(path, "stream_tags=rotate")
+    if legacy is not None:
+        result = _snap_to_90(legacy)
+        print(f"[rotation] legacy rotate={legacy} → rotate {result}° CW", flush=True)
+        return result
+    print("[rotation] no rotation metadata in stream", flush=True)
+    return 0
+
+
+def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
+    if degrees == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if degrees == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if degrees == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
+
 def probe_video_bitrate(path: str) -> Optional[int]:
     """Read the source video's bitrate via ffprobe so the encode can target
     the same data rate. Returns None when ffprobe is missing or the source
@@ -1953,7 +2020,14 @@ def _analyze_video_from_path(input_path: str) -> Dict[str, object]:
     capture = cv2.VideoCapture(input_path)
     if not capture.isOpened():
         raise ValueError("Input video could not be opened")
+    # Disable OpenCV's auto-rotation (default on in 4.5+) so we control
+    # orientation in exactly one place via probe_video_rotation.
+    try:
+        capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 0)
+    except cv2.error:
+        pass
 
+    rotation = probe_video_rotation(input_path)
     sample_indices = sample_frame_indices(capture, analysis_sample_frames())
     profiles: List[FaceProfile] = []
     sample_snapshots: List[Dict[str, object]] = []
@@ -1971,6 +2045,8 @@ def _analyze_video_from_path(input_path: str) -> Dict[str, object]:
             success, frame = capture.read()
             if not success:
                 continue
+            if rotation:
+                frame = apply_rotation(frame, rotation)
 
             # Downscale before MediaPipe. Keep enough resolution for smaller
             # side-by-side faces, but still avoid feeding full 4K frames.
@@ -2180,11 +2256,20 @@ def process_video(video_url: str, detected_faces: List[Dict[str, object]], filte
         capture = cv2.VideoCapture(input_path)
         if not capture.isOpened():
             raise ValueError("Input video could not be opened")
+        try:
+            capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 0)
+        except cv2.error:
+            pass
 
+        rotation = probe_video_rotation(input_path)
         fps = capture.get(cv2.CAP_PROP_FPS) or 25.0
         frame_dt = 1.0 / max(float(fps), 1.0)
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # Rotation swaps the visible orientation, so downstream sizing must
+        # use the displayed dimensions, not the stored raw frame dimensions.
+        if rotation in (90, 270):
+            width, height = height, width
         seed_profile_positions(profiles, detected_faces, (height, width, 3))
 
         # Single-pass encode: pipe raw BGR frames straight to ffmpeg and
@@ -2298,6 +2383,8 @@ def process_video(video_url: str, detected_faces: List[Dict[str, object]], filte
                 success, frame = capture.read()
                 if not success:
                     break
+                if rotation:
+                    frame = apply_rotation(frame, rotation)
 
                 output_buffer[frame_counter] = frame
                 detections = detect_faces(face_mesh, frame, tuning, with_thumbnails=False)
