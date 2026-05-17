@@ -146,7 +146,7 @@ export function useVideoProcessor() {
         pollingRef.current = null;
         goTo(3);
       }
-    }, 4000);
+    }, 20000);
   }
 
   async function ensureVideoUploaded() {

@@ -74,7 +74,12 @@ const authLimiter = rateLimit({
 });
 const videoLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 60,
+  max: 200,
+  // GET /:videoId/status is polled every 4s by the frontend while a job runs
+  // — exempt it from the limiter since it's read-only and would otherwise
+  // burn the entire budget within minutes of a single upload.
+  skip: (req) =>
+    req.method === "GET" && /^\/[a-f0-9]{24}\/status$/i.test(req.path),
   standardHeaders: true,
   legacyHeaders: false
 });
