@@ -1,5 +1,9 @@
 # Cartoon Face Filter
 
+**Live demo:** https://sa-hal.netlify.app
+
+> First request after idle may take ~30s while the free-tier backend and AI service wake from sleep.
+
 This repo contains a three-service video pipeline:
 
 - `frontend`: React app for video upload, multi-face preview, filter assignment, and status polling
